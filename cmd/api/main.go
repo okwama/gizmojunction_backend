@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -140,13 +141,30 @@ func main() {
 	}
 }
 
-// corsMiddleware allows the SvelteKit storefront's origin to call these
+// corsMiddleware allows the SvelteKit storefront's origin(s) to call these
 // endpoints — the +page.js load functions this replaces run in the browser
 // on client-side navigation, not only during SSR.
-func corsMiddleware(allowedOrigin string, next http.Handler) http.Handler {
+//
+// allowedOrigins is comma-separated (CORS_ORIGIN="https://gizmojunction.com,http://localhost:5173")
+// since Access-Control-Allow-Origin can only ever echo back one origin per
+// response — a literal comma-joined value there would just make browsers
+// reject it. Instead this matches the request's own Origin header against
+// the allow-list and echoes back only that one when it matches.
+func corsMiddleware(allowedOrigins string, next http.Handler) http.Handler {
+	allowed := make(map[string]bool)
+	for _, origin := range strings.Split(allowedOrigins, ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			allowed[origin] = true
+		}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		origin := r.Header.Get("Origin")
+		if allowed[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
