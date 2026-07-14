@@ -49,7 +49,7 @@ func Load() (*Config, error) {
 
 	corsOrigin := os.Getenv("CORS_ORIGIN")
 	if corsOrigin == "" {
-		corsOrigin = "http://localhost:5173"
+		corsOrigin = "http://localhost:5174,http://localhost:5173,https://gizmojunction.com,https://www.gizmojunction.com"
 	}
 
 	siteURL := os.Getenv("PUBLIC_SITE_URL")
@@ -59,7 +59,7 @@ func Load() (*Config, error) {
 
 	adminEmail := os.Getenv("ADMIN_NOTIFICATION_EMAIL")
 	if adminEmail == "" {
-		adminEmail = "okwamabenjamin@gmail.com"
+		adminEmail = "admin@gizmojunction.com"
 	}
 
 	jwtSecret := os.Getenv("JWT_SECRET")
