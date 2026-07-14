@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260415140000_checkout_summary_receipt_path.sql

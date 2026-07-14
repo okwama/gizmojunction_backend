@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260324181000_audit_triggers.sql

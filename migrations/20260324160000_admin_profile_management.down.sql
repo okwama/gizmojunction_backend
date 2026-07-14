@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260324160000_admin_profile_management.sql

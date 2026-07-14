@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260501000000_fix_audit_logs_profiles_relationship.sql

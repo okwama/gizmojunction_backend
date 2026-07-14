@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260516160500_sync_settings.sql

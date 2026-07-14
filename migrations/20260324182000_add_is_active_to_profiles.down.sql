@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260324182000_add_is_active_to_profiles.sql

@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260328210128_product_catalog_rls.sql

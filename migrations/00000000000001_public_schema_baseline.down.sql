@@ -1,0 +1,1 @@
+-- no-down migration: baseline schema dump, replaying it in reverse is not meaningful

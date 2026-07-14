@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260519100000_shipping_zones.sql

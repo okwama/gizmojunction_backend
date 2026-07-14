@@ -1,0 +1,1 @@
+-- no-down migration: forward-only replay from supabase/migrations/20260428030000_add_push_token.sql
