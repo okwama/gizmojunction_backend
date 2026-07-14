@@ -49,7 +49,7 @@ func Load() (*Config, error) {
 
 	corsOrigin := os.Getenv("CORS_ORIGIN")
 	if corsOrigin == "" {
-		corsOrigin = "http://localhost:5174,http://localhost:5173,https://gizmojunction.com,https://www.gizmojunction.com"
+		corsOrigin = "http://localhost:5173,http://localhost:5174,https://gizmojunction.com,https://www.gizmojunction.com"
 	}
 
 	siteURL := os.Getenv("PUBLIC_SITE_URL")

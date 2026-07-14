@@ -150,19 +150,35 @@ func main() {
 // response — a literal comma-joined value there would just make browsers
 // reject it. Instead this matches the request's own Origin header against
 // the allow-list and echoes back only that one when it matches.
+//
+// Requests with no Origin header at all (SvelteKit's own SSR `load` fetch,
+// curl, server-to-server calls) aren't real browser CORS requests — there's
+// no browser to enforce anything on them. But SvelteKit's `load_data.js`
+// deliberately *simulates* the browser CORS check during SSR too, for
+// consistency with what happens after hydration, and it does this by
+// comparing Access-Control-Allow-Origin against its own app origin — even
+// though it never sent an Origin header for us to match against. So for
+// Origin-less requests we fall back to the first configured allowed origin,
+// which in practice is "the one SvelteKit app that calls this backend in
+// this environment" (dev backend + dev frontend, or prod + prod).
 func corsMiddleware(allowedOrigins string, next http.Handler) http.Handler {
+	var allowedList []string
 	allowed := make(map[string]bool)
 	for _, origin := range strings.Split(allowedOrigins, ",") {
 		if origin = strings.TrimSpace(origin); origin != "" {
+			allowedList = append(allowedList, origin)
 			allowed[origin] = true
 		}
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if allowed[origin] {
+		switch {
+		case allowed[origin]:
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
+		case origin == "" && len(allowedList) > 0:
+			w.Header().Set("Access-Control-Allow-Origin", allowedList[0])
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
