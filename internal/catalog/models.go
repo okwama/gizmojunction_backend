@@ -62,10 +62,37 @@ type Category struct {
 }
 
 type Brand struct {
-	ID       string  `db:"id" json:"id"`
-	Name     string  `db:"name" json:"name"`
-	ImageURL *string `db:"image_url" json:"image_url,omitempty"`
-	Slug     *string `db:"slug" json:"slug,omitempty"`
+	ID         string  `db:"id" json:"id"`
+	Name       string  `db:"name" json:"name"`
+	ImageURL   *string `db:"image_url" json:"image_url,omitempty"`
+	Slug       *string `db:"slug" json:"slug,omitempty"`
+	IsFeatured bool    `db:"is_featured" json:"is_featured"`
+}
+
+// AdminProduct is the admin-facing product shape: wider than ProductSummary/
+// ProductDetail (includes cost_price, tax_class, is_published — never
+// exposed on the public catalog endpoints) and flatter than the frontend's
+// previous `select('*, brand:brands(*), category:categories(*))` — brand/
+// category names are joined in directly rather than nested, since the admin
+// list/edit views only ever use the name, not the full related row.
+type AdminProduct struct {
+	ID              string   `db:"id" json:"id"`
+	Name            string   `db:"name" json:"name"`
+	SKU             string   `db:"sku" json:"sku"`
+	BrandID         *string  `db:"brand_id" json:"brand_id,omitempty"`
+	BrandName       *string  `db:"brand_name" json:"brand_name,omitempty"`
+	CategoryID      *string  `db:"category_id" json:"category_id,omitempty"`
+	CategoryName    *string  `db:"category_name" json:"category_name,omitempty"`
+	Price           float64  `db:"price" json:"price"`
+	SalePrice       *float64 `db:"sale_price" json:"sale_price,omitempty"`
+	CostPrice       *float64 `db:"cost_price" json:"cost_price,omitempty"`
+	OldPrice        *float64 `db:"old_price" json:"old_price,omitempty"`
+	DescriptionHTML *string  `db:"description_html" json:"description_html,omitempty"`
+	StockQty        int32    `db:"stock_quantity" json:"stock_quantity"`
+	ImageURL        *string  `db:"image_url" json:"image_url,omitempty"`
+	TaxClass        *string  `db:"tax_class" json:"tax_class,omitempty"`
+	IsFeatured      bool     `db:"is_featured" json:"is_featured"`
+	IsPublished     bool     `db:"is_published" json:"is_published"`
 }
 
 type Promotion struct {

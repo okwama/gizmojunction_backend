@@ -102,11 +102,13 @@ func main() {
 	})
 
 	api := humago.New(mux, huma.DefaultConfig("Gizmo Junction API", "0.1.0"))
-	catalog.Register(api, catalog.NewRepo(pool))
+	catalogRepo := catalog.NewRepo(pool)
+	catalog.Register(api, catalogRepo)
 
 	authSvc := auth.NewService(auth.NewRepo(pool), cfg.JWTSecret)
 	auth.Register(api, authSvc)
 	auth.RegisterAdminUsers(api, authSvc)
+	catalog.RegisterAdmin(api, catalogRepo, authSvc)
 
 	aiCfg := ai.Config{GeminiAPIKey: cfg.GeminiAPIKey, GroqAPIKey: cfg.GroqAPIKey}
 	ai.RegisterGenerateBlog(api, aiCfg, authSvc)

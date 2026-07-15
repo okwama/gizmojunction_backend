@@ -237,7 +237,7 @@ func (r *Repo) ProductBySKU(ctx context.Context, sku string) (ProductDetail, err
 // brands.logo_url is aliased to image_url here — the frontend has always
 // expected `image_url` on a brand; this is a column-name mapping, not a
 // schema change.
-const brandColumns = `id::text, name, logo_url AS image_url, slug`
+const brandColumns = `id::text, name, logo_url AS image_url, slug, is_featured`
 
 func (r *Repo) BrandByID(ctx context.Context, id string) (Brand, error) {
 	rows, err := r.pool.Query(ctx, `SELECT `+brandColumns+` FROM brands WHERE id = $1`, id)
