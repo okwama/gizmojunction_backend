@@ -158,6 +158,20 @@ func RegisterAdmin(api huma.API, repo *Repo, authSvc *auth.Service, indexer Prod
 	}, h.EmptyCatalog)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-cleanup-products",
+		Method:      http.MethodGet,
+		Path:        "/v1/admin/cleanup/products",
+		Summary:     "Products needing cleanup, filtered by issue type (admin only)",
+	}, h.ListCleanupProducts)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-apply-cleanup",
+		Method:      http.MethodPost,
+		Path:        "/v1/admin/cleanup/apply",
+		Summary:     "Apply cleanup updates (names/SKUs/descriptions/categories) in bulk (admin only)",
+	}, h.ApplyCleanup)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "admin-list-promotions",
 		Method:      http.MethodGet,
 		Path:        "/v1/admin/promotions",
