@@ -18,6 +18,7 @@ import (
 	"gizmojunction/backend/internal/config"
 	"gizmojunction/backend/internal/db"
 	"gizmojunction/backend/internal/jobs"
+	"gizmojunction/backend/internal/search"
 	"gizmojunction/backend/internal/storage"
 	"gizmojunction/backend/internal/taxetims"
 )
@@ -108,7 +109,25 @@ func main() {
 	authSvc := auth.NewService(auth.NewRepo(pool), cfg.JWTSecret)
 	auth.Register(api, authSvc)
 	auth.RegisterAdminUsers(api, authSvc)
-	catalog.RegisterAdmin(api, catalogRepo, authSvc)
+
+	// Search (Meilisearch) is optional infra, same "disabled until
+	// configured" pattern as R2 storage and KRA eTIMS below — product
+	// writes just skip indexing and /v1/search is never registered if
+	// MEILI_HOST isn't set.
+	var productIndexer catalog.ProductIndexer
+	if cfg.MeiliHost != "" {
+		searchClient := search.NewClient(cfg.MeiliHost, cfg.MeiliAPIKey, pool)
+		if err := searchClient.EnsureIndex(ctx); err != nil {
+			log.Printf("search: failed to configure Meilisearch index settings: %v", err)
+		}
+		search.Register(api, searchClient)
+		search.RegisterAdmin(api, searchClient, authSvc)
+		productIndexer = searchClient
+	} else {
+		log.Println("MEILI_HOST not configured — product search endpoints disabled")
+	}
+
+	catalog.RegisterAdmin(api, catalogRepo, authSvc, productIndexer)
 
 	aiCfg := ai.Config{GeminiAPIKey: cfg.GeminiAPIKey, GroqAPIKey: cfg.GroqAPIKey}
 	ai.RegisterGenerateBlog(api, aiCfg, authSvc)

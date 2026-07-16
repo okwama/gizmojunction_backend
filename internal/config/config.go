@@ -32,6 +32,12 @@ type Config struct {
 	SupabaseServiceRoleKey string
 	KRADefaultTaxpayerPIN  string
 	KRAEnv                 string // "sandbox" (default) | "production"
+
+	// MeiliHost empty disables search endpoint registration entirely (see
+	// cmd/api/main.go), matching the R2/eTIMS "disabled until configured"
+	// pattern already used elsewhere in this backend.
+	MeiliHost   string
+	MeiliAPIKey string
 }
 
 func Load() (*Config, error) {
@@ -88,5 +94,8 @@ func Load() (*Config, error) {
 		SupabaseServiceRoleKey: os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
 		KRADefaultTaxpayerPIN:  os.Getenv("KRA_PIN"),
 		KRAEnv:                 os.Getenv("KRA_ENV"),
+
+		MeiliHost:   os.Getenv("MEILI_HOST"),
+		MeiliAPIKey: os.Getenv("MEILI_API_KEY"),
 	}, nil
 }

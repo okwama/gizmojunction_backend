@@ -95,6 +95,38 @@ type AdminProduct struct {
 	IsPublished     bool     `db:"is_published" json:"is_published"`
 }
 
+// AdminPromotion is the admin-facing promotion shape: everything the
+// public Promotion struct has plus is_active/created_at, which the public
+// endpoints deliberately never expose (they filter on is_active instead).
+type AdminPromotion struct {
+	ID              string     `db:"id" json:"id"`
+	Title           string     `db:"title" json:"title"`
+	Description     *string    `db:"description" json:"description,omitempty"`
+	BannerURL       *string    `db:"banner_url" json:"banner_url,omitempty"`
+	TargetURL       *string    `db:"target_url" json:"target_url,omitempty"`
+	IsActive        bool       `db:"is_active" json:"is_active"`
+	StartsAt        *time.Time `db:"starts_at" json:"starts_at,omitempty"`
+	EndsAt          *time.Time `db:"ends_at" json:"ends_at,omitempty"`
+	DisplayLocation string     `db:"display_location" json:"display_location"`
+	BadgeText       *string    `db:"badge_text" json:"badge_text,omitempty"`
+	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
+}
+
+// AdminBlogPost is the full blog_posts row for the admin editor — the
+// public catalog surface only ever exposes BlogPostSummary.
+type AdminBlogPost struct {
+	ID          string     `db:"id" json:"id"`
+	Title       string     `db:"title" json:"title"`
+	Slug        string     `db:"slug" json:"slug"`
+	Excerpt     *string    `db:"excerpt" json:"excerpt,omitempty"`
+	Content     *string    `db:"content" json:"content,omitempty"`
+	CoverImage  *string    `db:"cover_image" json:"cover_image,omitempty"`
+	IsPublished bool       `db:"is_published" json:"is_published"`
+	PublishedAt *time.Time `db:"published_at" json:"published_at,omitempty"`
+	CreatedAt   time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt   time.Time  `db:"updated_at" json:"updated_at"`
+}
+
 type Promotion struct {
 	ID              string     `db:"id" json:"id"`
 	Title           string     `db:"title" json:"title"`

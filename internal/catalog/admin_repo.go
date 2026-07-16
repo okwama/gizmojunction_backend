@@ -200,3 +200,83 @@ func (r *Repo) EmptyProductCatalog(ctx context.Context) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM products`)
 	return err
 }
+
+const adminPromotionColumns = `id::text, title, description, banner_url, target_url, is_active, starts_at, ends_at, display_location, badge_text, created_at`
+
+func (r *Repo) ListPromotionsAdmin(ctx context.Context) ([]AdminPromotion, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+adminPromotionColumns+` FROM promotions ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByName[AdminPromotion])
+}
+
+func (r *Repo) UpsertPromotion(ctx context.Context, p AdminPromotion) (AdminPromotion, error) {
+	rows, err := r.pool.Query(ctx, `
+		INSERT INTO promotions (id, title, description, banner_url, target_url, is_active, starts_at, ends_at, display_location, badge_text)
+		VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (id) DO UPDATE SET
+			title = EXCLUDED.title,
+			description = EXCLUDED.description,
+			banner_url = EXCLUDED.banner_url,
+			target_url = EXCLUDED.target_url,
+			is_active = EXCLUDED.is_active,
+			starts_at = EXCLUDED.starts_at,
+			ends_at = EXCLUDED.ends_at,
+			display_location = EXCLUDED.display_location,
+			badge_text = EXCLUDED.badge_text
+		RETURNING `+adminPromotionColumns,
+		nullIfEmpty(p.ID), p.Title, p.Description, p.BannerURL, p.TargetURL, p.IsActive, p.StartsAt, p.EndsAt, p.DisplayLocation, p.BadgeText)
+	if err != nil {
+		return AdminPromotion{}, err
+	}
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[AdminPromotion])
+}
+
+func (r *Repo) DeletePromotion(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM promotions WHERE id = $1`, id)
+	return err
+}
+
+const adminBlogPostColumns = `id::text, title, slug, excerpt, content, cover_image, is_published, published_at, created_at, updated_at`
+
+func (r *Repo) ListBlogPostsAdmin(ctx context.Context) ([]AdminBlogPost, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+adminBlogPostColumns+` FROM blog_posts ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByName[AdminBlogPost])
+}
+
+// UpsertBlogPost owns the "stamp published_at on first publish" rule the
+// admin page previously implemented client-side: publishing a post that
+// was never published sets published_at to now; re-saving an already-
+// published post keeps its original timestamp; drafts keep NULL.
+func (r *Repo) UpsertBlogPost(ctx context.Context, b AdminBlogPost) (AdminBlogPost, error) {
+	rows, err := r.pool.Query(ctx, `
+		INSERT INTO blog_posts (id, title, slug, excerpt, content, cover_image, is_published, published_at, updated_at)
+		VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, CASE WHEN $7 THEN now() END, now())
+		ON CONFLICT (id) DO UPDATE SET
+			title = EXCLUDED.title,
+			slug = EXCLUDED.slug,
+			excerpt = EXCLUDED.excerpt,
+			content = EXCLUDED.content,
+			cover_image = EXCLUDED.cover_image,
+			is_published = EXCLUDED.is_published,
+			published_at = CASE
+				WHEN EXCLUDED.is_published AND blog_posts.published_at IS NULL THEN now()
+				ELSE blog_posts.published_at
+			END,
+			updated_at = now()
+		RETURNING `+adminBlogPostColumns,
+		nullIfEmpty(b.ID), b.Title, b.Slug, b.Excerpt, b.Content, b.CoverImage, b.IsPublished)
+	if err != nil {
+		return AdminBlogPost{}, err
+	}
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[AdminBlogPost])
+}
+
+func (r *Repo) DeleteBlogPost(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM blog_posts WHERE id = $1`, id)
+	return err
+}
