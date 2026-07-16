@@ -17,6 +17,7 @@ import (
 	"gizmojunction/backend/internal/catalog"
 	"gizmojunction/backend/internal/config"
 	"gizmojunction/backend/internal/db"
+	"gizmojunction/backend/internal/erp"
 	"gizmojunction/backend/internal/jobs"
 	"gizmojunction/backend/internal/search"
 	"gizmojunction/backend/internal/storage"
@@ -133,8 +134,12 @@ func main() {
 	ai.RegisterGenerateBlog(api, aiCfg, authSvc)
 	ai.RegisterSuggestName(api, aiCfg, authSvc)
 
+	// r2Client stays nil when R2 isn't configured — the ERP LPO endpoint
+	// then answers 503 instead of being unregistered, since the rest of the
+	// ERP page works fine without document storage.
+	var r2Client *storage.Client
 	if cfg.R2AccountID != "" && cfg.R2AccessKeyID != "" && cfg.R2SecretKey != "" && cfg.R2Bucket != "" {
-		r2Client, err := storage.NewClient(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretKey, cfg.R2Bucket)
+		r2Client, err = storage.NewClient(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretKey, cfg.R2Bucket)
 		if err != nil {
 			log.Fatalf("init R2 client: %v", err)
 		}
@@ -142,6 +147,8 @@ func main() {
 	} else {
 		log.Println("R2 not configured (R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET) — document upload/redirect endpoints disabled")
 	}
+
+	erp.Register(api, erp.NewRepo(pool), authSvc, r2Client)
 
 	if taxetimsRepo != nil {
 		taxetimsDeps := taxetims.Deps{
