@@ -594,7 +594,11 @@ func (h *Handlers) ListSettings(ctx context.Context, input *adminAuthInput) (*Li
 	return &ListSettingsOutput{Body: settings}, nil
 }
 
-type SaveSettingInput struct {
+// SaveSyncSettingInput is deliberately not named SaveSettingInput — huma
+// registers OpenAPI schemas by type name, and internal/store already owns a
+// differently-shaped SaveSettingInput. A duplicate name with a different
+// shape panics at startup registration (learned from a failed deploy).
+type SaveSyncSettingInput struct {
 	Authorization string `header:"Authorization"`
 	Body          struct {
 		Key   string          `json:"key"`
@@ -602,7 +606,7 @@ type SaveSettingInput struct {
 	}
 }
 
-func (h *Handlers) SaveSetting(ctx context.Context, input *SaveSettingInput) (*successOutput, error) {
+func (h *Handlers) SaveSetting(ctx context.Context, input *SaveSyncSettingInput) (*successOutput, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
