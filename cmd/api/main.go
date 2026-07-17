@@ -10,15 +10,20 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"gizmojunction/backend/internal/account"
 	"gizmojunction/backend/internal/ai"
+	"gizmojunction/backend/internal/audit"
 	"gizmojunction/backend/internal/auth"
 	"gizmojunction/backend/internal/catalog"
 	"gizmojunction/backend/internal/config"
 	"gizmojunction/backend/internal/db"
 	"gizmojunction/backend/internal/erp"
+	"gizmojunction/backend/internal/importer"
 	"gizmojunction/backend/internal/jobs"
+	"gizmojunction/backend/internal/orders"
 	"gizmojunction/backend/internal/search"
 	"gizmojunction/backend/internal/storage"
 	"gizmojunction/backend/internal/store"
@@ -47,8 +52,9 @@ func main() {
 	// rather than erroring when that connection isn't configured, matching
 	// the R2/storage pattern below.
 	var taxetimsRepo *taxetims.Repo
+	var supabasePool *pgxpool.Pool
 	if cfg.SupabaseDatabaseURL != "" {
-		supabasePool, err := db.Connect(ctx, cfg.SupabaseDatabaseURL)
+		supabasePool, err = db.Connect(ctx, cfg.SupabaseDatabaseURL)
 		if err != nil {
 			log.Fatalf("connect to supabase database: %v", err)
 		}
@@ -154,6 +160,21 @@ func main() {
 	erp.Register(api, erp.NewRepo(pool), authSvc, r2Client)
 	store.Register(api, store.NewRepo(pool), authSvc)
 	suppliersync.Register(api, mux, suppliersync.NewRepo(pool), authSvc, productIndexer)
+	audit.Register(api, pool, authSvc)
+	account.Register(api, pool, authSvc)
+	importer.Register(api, pool, authSvc, r2Client, productIndexer, importer.Config{
+		GeminiAPIKey:     cfg.GeminiAPIKey,
+		BackendPublicURL: cfg.BackendPublicURL,
+	})
+
+	// Orders live in Supabase until the Phase 6 payment-webhook cutover, so
+	// the whole orders domain rides the same second pool as eTIMS and is
+	// disabled without it.
+	if supabasePool != nil {
+		orders.Register(api, orders.NewRepo(supabasePool, pool), authSvc)
+	} else {
+		log.Println("SUPABASE_DATABASE_URL not configured — orders endpoints disabled")
+	}
 
 	if taxetimsRepo != nil {
 		taxetimsDeps := taxetims.Deps{

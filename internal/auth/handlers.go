@@ -293,6 +293,12 @@ func (s *Service) requireBearer(authHeader string) (*Claims, error) {
 	return claims, nil
 }
 
+// Authenticate verifies the bearer token for any role — used by endpoints
+// that only need to know who the caller is (own-account operations).
+func (s *Service) Authenticate(authHeader string) (*Claims, error) {
+	return s.requireBearer(authHeader)
+}
+
 // RequireRole is called by handlers in other packages that need to gate an
 // endpoint to a specific role (e.g. the AI admin endpoints).
 func (s *Service) RequireRole(authHeader, role string) (*Claims, error) {

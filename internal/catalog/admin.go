@@ -158,6 +158,13 @@ func RegisterAdmin(api huma.API, repo *Repo, authSvc *auth.Service, indexer Prod
 	}, h.EmptyCatalog)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "admin-patch-descriptions",
+		Method:      http.MethodPost,
+		Path:        "/v1/admin/products/patch-descriptions",
+		Summary:     "Fill blank product descriptions by SKU in bulk (admin only)",
+	}, h.PatchDescriptions)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "admin-list-cleanup-products",
 		Method:      http.MethodGet,
 		Path:        "/v1/admin/cleanup/products",
