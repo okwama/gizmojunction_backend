@@ -21,6 +21,8 @@ import (
 	"gizmojunction/backend/internal/jobs"
 	"gizmojunction/backend/internal/search"
 	"gizmojunction/backend/internal/storage"
+	"gizmojunction/backend/internal/store"
+	"gizmojunction/backend/internal/suppliersync"
 	"gizmojunction/backend/internal/taxetims"
 )
 
@@ -106,6 +108,7 @@ func main() {
 	api := humago.New(mux, huma.DefaultConfig("Gizmo Junction API", "0.1.0"))
 	catalogRepo := catalog.NewRepo(pool)
 	catalog.Register(api, catalogRepo)
+	catalog.RegisterExtra(api, catalogRepo)
 
 	authSvc := auth.NewService(auth.NewRepo(pool), cfg.JWTSecret)
 	auth.Register(api, authSvc)
@@ -149,6 +152,8 @@ func main() {
 	}
 
 	erp.Register(api, erp.NewRepo(pool), authSvc, r2Client)
+	store.Register(api, store.NewRepo(pool), authSvc)
+	suppliersync.Register(api, mux, suppliersync.NewRepo(pool), authSvc, productIndexer)
 
 	if taxetimsRepo != nil {
 		taxetimsDeps := taxetims.Deps{

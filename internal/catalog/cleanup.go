@@ -127,6 +127,70 @@ func (r *Repo) ApplyCleanupUpdate(ctx context.Context, u CleanupUpdate) error {
 	return err
 }
 
+// PatchDescriptions fills blank product descriptions from a CSV in one
+// set-based statement — the old admin component did two queries per row
+// from the browser. Rows whose product already has a description are
+// counted but left untouched.
+type PatchDescriptionsResult struct {
+	Updated        int `json:"updated"`
+	NotFound       int `json:"not_found"`
+	SkippedHasDesc int `json:"skipped_has_desc"`
+}
+
+func (r *Repo) PatchDescriptions(ctx context.Context, skus, descriptions []string) (PatchDescriptionsResult, error) {
+	var res PatchDescriptionsResult
+	err := r.pool.QueryRow(ctx, `
+		WITH input AS (
+			SELECT * FROM unnest($1::text[], $2::text[]) AS t(sku, description)
+		),
+		matched AS (
+			SELECT i.sku, i.description, p.id, p.description AS existing
+			FROM input i JOIN products p ON p.sku = i.sku
+		),
+		updated AS (
+			UPDATE products p SET description = m.description, updated_at = now()
+			FROM matched m
+			WHERE p.id = m.id AND (m.existing IS NULL OR btrim(m.existing) = '')
+			RETURNING p.id
+		)
+		SELECT
+			(SELECT count(*) FROM updated),
+			(SELECT count(*) FROM input) - (SELECT count(*) FROM matched),
+			(SELECT count(*) FROM matched) - (SELECT count(*) FROM updated)`,
+		skus, descriptions).Scan(&res.Updated, &res.NotFound, &res.SkippedHasDesc)
+	return res, err
+}
+
+type PatchDescriptionsInput struct {
+	Authorization string `header:"Authorization"`
+	Body          struct {
+		Items []struct {
+			SKU         string `json:"sku"`
+			Description string `json:"description"`
+		} `json:"items"`
+	}
+}
+
+func (h *AdminHandlers) PatchDescriptions(ctx context.Context, input *PatchDescriptionsInput) (*struct{ Body PatchDescriptionsResult }, error) {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+		return nil, err
+	}
+	if len(input.Body.Items) == 0 {
+		return nil, huma.Error400BadRequest("items is required")
+	}
+	skus := make([]string, 0, len(input.Body.Items))
+	descriptions := make([]string, 0, len(input.Body.Items))
+	for _, item := range input.Body.Items {
+		skus = append(skus, item.SKU)
+		descriptions = append(descriptions, item.Description)
+	}
+	result, err := h.repo.PatchDescriptions(ctx, skus, descriptions)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("failed to patch descriptions", err)
+	}
+	return &struct{ Body PatchDescriptionsResult }{Body: result}, nil
+}
+
 type ListCleanupProductsInput struct {
 	Authorization string `header:"Authorization"`
 	Filter        string `query:"filter" enum:"generic,others,uncategorized,descriptions,sku"`
