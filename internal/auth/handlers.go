@@ -12,6 +12,12 @@ import (
 
 const RefreshTokenTTL = 30 * 24 * time.Hour
 
+// refreshRotationGrace is how long a rotated (revoked-by-use) refresh token
+// keeps working, so parallel requests racing to refresh don't kill the
+// session. Long enough for a slow page's parallel loads; far too short for a
+// stolen token to matter.
+const refreshRotationGrace = 60 * time.Second
+
 type Service struct {
 	repo      *Repo
 	jwtSecret []byte
@@ -205,7 +211,14 @@ func (s *Service) Refresh(ctx context.Context, input *RefreshInput) (*AuthRespon
 		}
 		return nil, huma.Error500InternalServerError("lookup failed", err)
 	}
-	if rt.RevokedAt != nil || time.Now().After(rt.ExpiresAt) {
+	if time.Now().After(rt.ExpiresAt) {
+		return nil, huma.Error401Unauthorized("refresh token expired or revoked")
+	}
+	// A just-revoked token is still accepted within a short grace window:
+	// when the access token expires, SvelteKit fires several server loads in
+	// parallel and they all refresh with the same token — without the grace
+	// the losers get 401s and the frontend treats the session as dead.
+	if rt.RevokedAt != nil && time.Since(*rt.RevokedAt) > refreshRotationGrace {
 		return nil, huma.Error401Unauthorized("refresh token expired or revoked")
 	}
 
@@ -217,8 +230,11 @@ func (s *Service) Refresh(ctx context.Context, input *RefreshInput) (*AuthRespon
 		return nil, huma.Error403Forbidden("account is deactivated")
 	}
 
-	// Rotate: revoke the used token, issue a fresh pair.
-	_ = s.repo.RevokeRefreshToken(ctx, hash)
+	// Rotate on first use only — a grace-window reuse must not extend the
+	// revocation timestamp.
+	if rt.RevokedAt == nil {
+		_ = s.repo.RevokeRefreshToken(ctx, hash)
+	}
 
 	tokens, err := s.issueTokens(ctx, profile)
 	if err != nil {
