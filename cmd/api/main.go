@@ -23,7 +23,9 @@ import (
 	"gizmojunction/backend/internal/erp"
 	"gizmojunction/backend/internal/importer"
 	"gizmojunction/backend/internal/jobs"
+	"gizmojunction/backend/internal/newsletter"
 	"gizmojunction/backend/internal/orders"
+	"gizmojunction/backend/internal/payments"
 	"gizmojunction/backend/internal/search"
 	"gizmojunction/backend/internal/storage"
 	"gizmojunction/backend/internal/store"
@@ -64,8 +66,28 @@ func main() {
 		log.Println("SUPABASE_DATABASE_URL not configured — KRA eTIMS endpoints disabled")
 	}
 
+	// r2Client is created before the river client because the tax worker
+	// now renders receipt PDFs in-process (Phase 6) and needs storage. It
+	// stays nil when R2 isn't configured — receipt generation and the LPO
+	// endpoint degrade gracefully.
+	var r2Client *storage.Client
+	if cfg.R2AccountID != "" && cfg.R2AccessKeyID != "" && cfg.R2SecretKey != "" && cfg.R2Bucket != "" {
+		r2Client, err = storage.NewClient(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretKey, cfg.R2Bucket)
+		if err != nil {
+			log.Fatalf("init R2 client: %v", err)
+		}
+	} else {
+		log.Println("R2 not configured (R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET) — document upload/redirect endpoints disabled")
+	}
+
+	var receiptDeps taxetims.ReceiptDeps
+	if taxetimsRepo != nil {
+		receiptDeps = taxetims.ReceiptDeps{Repo: taxetimsRepo, Catalog: pool, Store: r2Client}
+	}
+
 	riverClient, err := jobs.NewClient(jobs.Deps{
 		Pool:       pool,
+		OrdersPool: supabasePool,
 		Email:      emailSender,
 		SiteURL:    cfg.SiteURL,
 		AdminEmail: cfg.AdminEmail,
@@ -74,12 +96,11 @@ func main() {
 			return
 		}
 		river.AddWorker(workers, &taxetims.TaxInvoiceSubmitWorker{
-			Repo:                   taxetimsRepo,
-			Client:                 taxetims.NewClient(cfg.KRAEnv),
-			Email:                  emailSender,
-			AdminEmail:             cfg.AdminEmail,
-			SupabaseURL:            cfg.SupabaseURL,
-			SupabaseServiceRoleKey: cfg.SupabaseServiceRoleKey,
+			Repo:       taxetimsRepo,
+			Client:     taxetims.NewClient(cfg.KRAEnv),
+			Email:      emailSender,
+			AdminEmail: cfg.AdminEmail,
+			Receipt:    receiptDeps,
 		})
 	})
 	if err != nil {
@@ -143,22 +164,15 @@ func main() {
 	ai.RegisterGenerateBlog(api, aiCfg, authSvc)
 	ai.RegisterSuggestName(api, aiCfg, authSvc)
 
-	// r2Client stays nil when R2 isn't configured — the ERP LPO endpoint
-	// then answers 503 instead of being unregistered, since the rest of the
-	// ERP page works fine without document storage.
-	var r2Client *storage.Client
-	if cfg.R2AccountID != "" && cfg.R2AccessKeyID != "" && cfg.R2SecretKey != "" && cfg.R2Bucket != "" {
-		r2Client, err = storage.NewClient(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretKey, cfg.R2Bucket)
-		if err != nil {
-			log.Fatalf("init R2 client: %v", err)
-		}
+	// r2Client was created earlier (before the river client, which needs it
+	// for in-process receipt PDFs); only the HTTP routes register here.
+	if r2Client != nil {
 		storage.Register(mux, r2Client, cfg.InternalSecret)
-	} else {
-		log.Println("R2 not configured (R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET) — document upload/redirect endpoints disabled")
 	}
 
 	erp.Register(api, erp.NewRepo(pool), authSvc, r2Client)
 	store.Register(api, store.NewRepo(pool), authSvc)
+	newsletter.Register(api, newsletter.NewRepo(pool))
 	suppliersync.Register(api, mux, suppliersync.NewRepo(pool), authSvc, productIndexer)
 	audit.Register(api, pool, authSvc)
 	account.Register(api, pool, authSvc)
@@ -176,6 +190,7 @@ func main() {
 		log.Println("SUPABASE_DATABASE_URL not configured — orders endpoints disabled")
 	}
 
+	var taxetimsDepsPtr *taxetims.Deps
 	if taxetimsRepo != nil {
 		taxetimsDeps := taxetims.Deps{
 			Repo:               taxetimsRepo,
@@ -185,6 +200,32 @@ func main() {
 		}
 		taxetims.RegisterInternal(mux, taxetimsDeps)
 		taxetims.RegisterAdmin(api, taxetimsDeps, authSvc)
+		taxetims.RegisterReceipts(api, receiptDeps, authSvc)
+		taxetimsDepsPtr = &taxetimsDeps
+	}
+
+	// Payments (Phase 6) ride the same transitional Supabase orders pool.
+	// M-Pesa flips per STK push (its callback URL is in each request);
+	// Paystack flips when the dashboard webhook URL is repointed here.
+	if supabasePool != nil {
+		payments.Register(api, mux, &payments.Deps{
+			Orders:   supabasePool,
+			River:    riverClient,
+			Taxetims: taxetimsDepsPtr,
+			Cfg: payments.Config{
+				MpesaConsumerKey:    cfg.MpesaConsumerKey,
+				MpesaConsumerSecret: cfg.MpesaConsumerSecret,
+				MpesaPasskey:        cfg.MpesaPasskey,
+				MpesaShortcode:      cfg.MpesaShortcode,
+				MpesaTillNumber:     cfg.MpesaTillNumber,
+				MpesaEnvironment:    cfg.MpesaEnvironment,
+				PaystackSecretKey:   cfg.PaystackSecretKey,
+				BackendPublicURL:    cfg.BackendPublicURL,
+				SiteURL:             cfg.SiteURL,
+			},
+		})
+	} else {
+		log.Println("SUPABASE_DATABASE_URL not configured — payment endpoints disabled")
 	}
 
 	handler := corsMiddleware(cfg.CORSOrigin, mux)

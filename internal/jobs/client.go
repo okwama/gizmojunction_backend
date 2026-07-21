@@ -10,7 +10,15 @@ import (
 )
 
 type Deps struct {
-	Pool       *pgxpool.Pool
+	Pool *pgxpool.Pool
+
+	// OrdersPool is the transitional Supabase connection where orders still
+	// live until the Phase 6 cutover — the order-notification workers must
+	// read from it or they'd never find the orders the payment webhooks just
+	// marked paid. Nil falls back to Pool (which becomes correct once the
+	// orders database is Neon).
+	OrdersPool *pgxpool.Pool
+
 	Email      *EmailSender
 	SiteURL    string
 	AdminEmail string
@@ -26,9 +34,14 @@ type Deps struct {
 // imports jobs for EmailSender) — main.go calls river.AddWorker on the
 // same *river.Workers registry before the client is constructed.
 func NewClient(deps Deps, registerExtra ...func(*river.Workers)) (*river.Client[pgx.Tx], error) {
+	ordersPool := deps.OrdersPool
+	if ordersPool == nil {
+		ordersPool = deps.Pool
+	}
+
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &OrderNotificationWorker{Pool: deps.Pool, Email: deps.Email, SiteURL: deps.SiteURL, AdminEmail: deps.AdminEmail})
-	river.AddWorker(workers, &OrderShippedNotificationWorker{Pool: deps.Pool, Email: deps.Email, SiteURL: deps.SiteURL})
+	river.AddWorker(workers, &OrderNotificationWorker{Pool: ordersPool, Email: deps.Email, SiteURL: deps.SiteURL, AdminEmail: deps.AdminEmail})
+	river.AddWorker(workers, &OrderShippedNotificationWorker{Pool: ordersPool, Email: deps.Email, SiteURL: deps.SiteURL})
 	river.AddWorker(workers, &StockAlertsWorker{Pool: deps.Pool})
 	river.AddWorker(workers, &DailySalesSnapshotWorker{Pool: deps.Pool})
 	river.AddWorker(workers, &AbandonedCartRecoveryWorker{Pool: deps.Pool})

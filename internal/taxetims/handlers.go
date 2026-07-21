@@ -95,6 +95,13 @@ func RegisterInternal(mux *http.ServeMux, deps Deps) {
 	})
 }
 
+// EnqueueSubmission exposes the idempotent enqueue path for in-process
+// callers — the Go payment webhooks (Phase 6) call this directly instead of
+// looping back over HTTP like the Deno webhooks did.
+func EnqueueSubmission(ctx context.Context, deps Deps, orderID string) (string, error) {
+	return enqueueSubmission(ctx, deps, orderID)
+}
+
 type IssueInput struct {
 	Authorization string `header:"Authorization"`
 	Body          struct {

@@ -1,12 +1,11 @@
 package taxetims
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
+	"time"
 
 	"github.com/riverqueue/river"
 
@@ -38,14 +37,14 @@ type TaxInvoiceSubmitWorker struct {
 	Email      *jobs.EmailSender
 	AdminEmail string
 
-	// SupabaseURL/SupabaseServiceRoleKey let this worker trigger the
-	// existing (unchanged) generate-tax-receipt Deno function the same way
-	// the old mocked create-tax-invoice did. Both optional: if unset, PDF
-	// generation is skipped (logged) rather than erroring — the BRD's own
-	// risk table treats a receipt PDF failure as independent of the
-	// already-ISSUED tax_status, so this must never block/retry the job.
-	SupabaseURL            string
-	SupabaseServiceRoleKey string
+	// Receipt carries what in-process PDF generation needs (Neon pool for
+	// product/customer names, R2 storage) — the Phase 6 replacement for
+	// calling the generate-tax-receipt Deno function over HTTP. Optional:
+	// if storage isn't configured, PDF generation is skipped (logged)
+	// rather than erroring — the BRD's own risk table treats a receipt PDF
+	// failure as independent of the already-ISSUED tax_status, so this
+	// must never block/retry the job.
+	Receipt ReceiptDeps
 }
 
 func (w *TaxInvoiceSubmitWorker) Work(ctx context.Context, job *river.Job[TaxInvoiceSubmitArgs]) error {
@@ -89,13 +88,25 @@ func (w *TaxInvoiceSubmitWorker) Work(ctx context.Context, job *river.Job[TaxInv
 		return fmt.Errorf("mark issued: %w", err)
 	}
 
-	// Fire the existing (unchanged) receipt PDF generation, same HTTP call
-	// shape as today's mock — deliberately fire-and-forget: BRD risk table
-	// notes "Receipt PDF generation fails after successful OSCU response"
-	// must not affect the already-ISSUED tax_status.
-	go w.triggerReceiptGeneration(job.Args.TaxInvoiceID)
+	// Receipt PDF generation, now in-process (Phase 6) — deliberately
+	// fire-and-forget: BRD risk table notes "Receipt PDF generation fails
+	// after successful OSCU response" must not affect the already-ISSUED
+	// tax_status.
+	go w.generateReceipt(job.Args.TaxInvoiceID)
 
 	return nil
+}
+
+func (w *TaxInvoiceSubmitWorker) generateReceipt(invoiceID string) {
+	if w.Receipt.Store == nil {
+		fmt.Printf("R2 storage not configured; receipt PDF generation skipped for invoice %s\n", invoiceID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := GenerateReceipt(ctx, w.Receipt, invoiceID); err != nil {
+		fmt.Printf("receipt generation failed for invoice %s: %v\n", invoiceID, err)
+	}
 }
 
 // terminalOrRetry marks the invoice FAILED and lets river retry with
@@ -201,41 +212,5 @@ func paymentMethodCode(method string) string {
 		return "02" // card
 	default:
 		return "01" // cash/other
-	}
-}
-
-// triggerReceiptGeneration calls the existing, unchanged
-// generate-tax-receipt Deno function — same HTTP call shape the old mocked
-// create-tax-invoice already used (POST with a service-role bearer token
-// and {invoice_id}). Fire-and-forget: a receipt PDF failure must not roll
-// back the already-ISSUED tax_status (BRD risk table).
-func (w *TaxInvoiceSubmitWorker) triggerReceiptGeneration(invoiceID string) {
-	if w.SupabaseURL == "" || w.SupabaseServiceRoleKey == "" {
-		fmt.Printf("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set; receipt PDF generation skipped for invoice %s\n", invoiceID)
-		return
-	}
-
-	body, err := json.Marshal(map[string]string{"invoice_id": invoiceID})
-	if err != nil {
-		fmt.Printf("failed to build receipt generation request for invoice %s: %v\n", invoiceID, err)
-		return
-	}
-
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(w.SupabaseURL, "/")+"/functions/v1/generate-tax-receipt", bytes.NewReader(body))
-	if err != nil {
-		fmt.Printf("failed to build receipt generation request for invoice %s: %v\n", invoiceID, err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+w.SupabaseServiceRoleKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Printf("receipt generation request failed for invoice %s: %v\n", invoiceID, err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		fmt.Printf("receipt generation returned status %d for invoice %s\n", resp.StatusCode, invoiceID)
 	}
 }

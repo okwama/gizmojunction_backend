@@ -44,6 +44,17 @@ type Config struct {
 	// pattern already used elsewhere in this backend.
 	MeiliHost   string
 	MeiliAPIKey string
+
+	// Payment provider credentials (Phase 6) — previously Supabase Edge
+	// Function secrets. Missing M-Pesa or Paystack credentials disable that
+	// provider's endpoints individually.
+	MpesaConsumerKey    string
+	MpesaConsumerSecret string
+	MpesaPasskey        string
+	MpesaShortcode      string
+	MpesaTillNumber     string
+	MpesaEnvironment    string // "sandbox" (default) | "production"
+	PaystackSecretKey   string
 }
 
 func Load() (*Config, error) {
@@ -105,5 +116,20 @@ func Load() (*Config, error) {
 
 		MeiliHost:   os.Getenv("MEILI_HOST"),
 		MeiliAPIKey: os.Getenv("MEILI_API_KEY"),
+
+		MpesaConsumerKey:    os.Getenv("MPESA_CONSUMER_KEY"),
+		MpesaConsumerSecret: os.Getenv("MPESA_CONSUMER_SECRET"),
+		MpesaPasskey:        os.Getenv("MPESA_PASSKEY"),
+		MpesaShortcode:      envOr("MPESA_SHORTCODE", "174379"),
+		MpesaTillNumber:     envOr("MPESA_TILL_NUMBER", "3304235"),
+		MpesaEnvironment:    envOr("MPESA_ENVIRONMENT", "sandbox"),
+		PaystackSecretKey:   os.Getenv("PAYSTACK_SECRET_KEY"),
 	}, nil
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
