@@ -39,12 +39,6 @@ type Config struct {
 	// disables image re-hosting during imports (originals kept).
 	BackendPublicURL string
 
-	// MeiliHost empty disables search endpoint registration entirely (see
-	// cmd/api/main.go), matching the R2/eTIMS "disabled until configured"
-	// pattern already used elsewhere in this backend.
-	MeiliHost   string
-	MeiliAPIKey string
-
 	// Payment provider credentials (Phase 6) — previously Supabase Edge
 	// Function secrets. Missing M-Pesa or Paystack credentials disable that
 	// provider's endpoints individually.
@@ -113,9 +107,6 @@ func Load() (*Config, error) {
 		KRAEnv:                 os.Getenv("KRA_ENV"),
 
 		BackendPublicURL: os.Getenv("BACKEND_PUBLIC_URL"),
-
-		MeiliHost:   os.Getenv("MEILI_HOST"),
-		MeiliAPIKey: os.Getenv("MEILI_API_KEY"),
 
 		MpesaConsumerKey:    os.Getenv("MPESA_CONSUMER_KEY"),
 		MpesaConsumerSecret: os.Getenv("MPESA_CONSUMER_SECRET"),

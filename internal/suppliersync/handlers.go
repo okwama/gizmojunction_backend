@@ -11,28 +11,17 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"gizmojunction/backend/internal/auth"
-	"gizmojunction/backend/internal/catalog"
 )
 
 type Handlers struct {
 	repo    *Repo
 	authSvc *auth.Service
-	indexer catalog.ProductIndexer // nil when search isn't configured
-}
-
-func (h *Handlers) maybeIndex(ctx context.Context, id string) {
-	if h.indexer == nil || id == "" {
-		return
-	}
-	if err := h.indexer.IndexProductByID(ctx, id); err != nil {
-		log.Printf("search: failed to index product %s: %v", id, err)
-	}
 }
 
 // Register wires the huma endpoints plus the multipart upload handler,
 // which lives on the raw mux because file uploads are simpler outside huma.
-func Register(api huma.API, mux *http.ServeMux, repo *Repo, authSvc *auth.Service, indexer catalog.ProductIndexer) {
-	h := &Handlers{repo: repo, authSvc: authSvc, indexer: indexer}
+func Register(api huma.API, mux *http.ServeMux, repo *Repo, authSvc *auth.Service) {
+	h := &Handlers{repo: repo, authSvc: authSvc}
 
 	mux.HandleFunc("/v1/admin/supplier-sync/upload", h.handleUpload)
 
@@ -337,11 +326,9 @@ func (h *Handlers) Apply(ctx context.Context, input *ApplyInput) (*ApplyOutput, 
 					sku = pc.PartNo
 				}
 				newStorePrice := int(float64(pc.NewPrice) * markupMultiplier)
-				id, err := h.repo.SyncStorePrice(ctx, sku, pc.NewPrice, newStorePrice)
-				if err != nil {
+				if _, err := h.repo.SyncStorePrice(ctx, sku, pc.NewPrice, newStorePrice); err != nil {
 					log.Printf("suppliersync: failed to sync store price for %s: %v", sku, err)
 				}
-				h.maybeIndex(ctx, id)
 			}
 		}
 		if err := h.repo.InsertPriceHistory(ctx, history); err != nil {
@@ -375,11 +362,9 @@ func (h *Handlers) Apply(ctx context.Context, input *ApplyInput) (*ApplyOutput, 
 			if sku == "" {
 				sku = dc.PartNo
 			}
-			id, err := h.repo.UnpublishDiscontinued(ctx, sku)
-			if err != nil {
+			if _, err := h.repo.UnpublishDiscontinued(ctx, sku); err != nil {
 				log.Printf("suppliersync: failed to unpublish discontinued %s: %v", sku, err)
 			}
-			h.maybeIndex(ctx, id)
 		}
 	}
 
@@ -450,12 +435,10 @@ func (h *Handlers) Publish(ctx context.Context, input *PublishInput) (*PublishOu
 		}
 
 		storePrice := int(float64(p.SupplierPrice) * markupMultiplier)
-		productID, err := h.repo.UpsertPublishedProduct(ctx, p.PartNo, p.Description, p.Description, storePrice, p.SupplierPrice, *categoryID, input.Body.Status == "published")
-		if err != nil {
+		if _, err := h.repo.UpsertPublishedProduct(ctx, p.PartNo, p.Description, p.Description, storePrice, p.SupplierPrice, *categoryID, input.Body.Status == "published"); err != nil {
 			out.Body.Errors = append(out.Body.Errors, fmt.Sprintf("%s: Failed to publish to store - %v", partNo, err))
 			continue
 		}
-		h.maybeIndex(ctx, productID)
 
 		if err := h.repo.UpsertStoreLink(ctx, p.PartNo, p.PartNo, storePrice); err != nil {
 			log.Printf("suppliersync: failed to upsert store link for %s: %v", partNo, err)
@@ -514,11 +497,9 @@ func (h *Handlers) Link(ctx context.Context, input *LinkInput) (*successOutput, 
 	}
 
 	if input.Body.AdoptSKU {
-		id, err := h.repo.AdoptProductSKU(ctx, input.Body.StoreSKU, input.Body.PartNo)
-		if err != nil {
+		if _, err := h.repo.AdoptProductSKU(ctx, input.Body.StoreSKU, input.Body.PartNo); err != nil {
 			return nil, huma.Error500InternalServerError("Link created but failed to update Product SKU", err)
 		}
-		h.maybeIndex(ctx, id)
 	}
 
 	out := &successOutput{}

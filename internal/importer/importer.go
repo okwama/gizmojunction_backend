@@ -24,7 +24,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gizmojunction/backend/internal/auth"
-	"gizmojunction/backend/internal/catalog"
 	"gizmojunction/backend/internal/storage"
 )
 
@@ -37,12 +36,11 @@ type Importer struct {
 	pool    *pgxpool.Pool
 	authSvc *auth.Service
 	store   *storage.Client // nil disables image re-hosting
-	indexer catalog.ProductIndexer
 	cfg     Config
 }
 
-func Register(api huma.API, pool *pgxpool.Pool, authSvc *auth.Service, store *storage.Client, indexer catalog.ProductIndexer, cfg Config) {
-	imp := &Importer{pool: pool, authSvc: authSvc, store: store, indexer: indexer, cfg: cfg}
+func Register(api huma.API, pool *pgxpool.Pool, authSvc *auth.Service, store *storage.Client, cfg Config) {
+	imp := &Importer{pool: pool, authSvc: authSvc, store: store, cfg: cfg}
 
 	huma.Register(api, huma.Operation{
 		OperationID: "admin-create-import-job",
@@ -243,16 +241,7 @@ func (imp *Importer) importOne(ctx context.Context, row ImportProduct, jobID, mo
 		row.SKU, nullIfEmpty(row.Name), row.Price, row.SalePrice, brandID, categoryID,
 		nullIfEmpty(imageURL), nullIfEmpty(row.DescriptionHTML), nullIfEmpty(row.SummaryHTML),
 		row.Barcode, tags, row.StockQty, nullIfEmpty(jobID)).Scan(&productID)
-	if err != nil {
-		return err
-	}
-
-	if imp.indexer != nil {
-		if err := imp.indexer.IndexProductByID(ctx, productID); err != nil {
-			log.Printf("search: failed to index imported product %s: %v", productID, err)
-		}
-	}
-	return nil
+	return err
 }
 
 func nullIfEmpty(s string) *string {

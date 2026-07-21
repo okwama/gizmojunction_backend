@@ -1,3 +1,9 @@
+// Package search implements product search using Postgres directly: the
+// description_plain/summary_plain full-text GIN indexes already present in
+// the baseline schema, plus pg_trgm trigram indexes (see migration
+// 20260721010000_product_search_trgm) for typo-tolerant matching on the
+// short fields (name/brand/sku). No external search service to deploy,
+// pay for, or keep in sync with product writes.
 package search
 
 import (
@@ -5,16 +11,18 @@ import (
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
-	"gizmojunction/backend/internal/auth"
+	"gizmojunction/backend/internal/catalog"
 )
 
 // Register wires the public, unauthenticated search endpoint — the
 // typo-tolerant replacement for the frontend's previous direct
 // supabase.from('products')...ilike(...) calls (header suggestions +
 // /search results page).
-func Register(api huma.API, client *Client) {
-	h := &searchHandlers{client: client}
+func Register(api huma.API, pool *pgxpool.Pool) {
+	h := &handlers{pool: pool}
 	huma.Register(api, huma.Operation{
 		OperationID: "search-products",
 		Method:      http.MethodGet,
@@ -23,8 +31,8 @@ func Register(api huma.API, client *Client) {
 	}, h.Search)
 }
 
-type searchHandlers struct {
-	client *Client
+type handlers struct {
+	pool *pgxpool.Pool
 }
 
 type SearchInput struct {
@@ -33,55 +41,48 @@ type SearchInput struct {
 	Category string `query:"category" doc:"category slug, optional"`
 }
 
-func (h *searchHandlers) Search(ctx context.Context, input *SearchInput) (*struct{ Body []ProductDoc }, error) {
+// relevanceFloor drops near-zero matches (e.g. a single shared trigram)
+// rather than returning the entire catalog ranked by noise.
+const relevanceFloor = 0.05
+
+func (h *handlers) Search(ctx context.Context, input *SearchInput) (*struct{ Body []catalog.ProductSummary }, error) {
 	if input.Q == "" {
-		return &struct{ Body []ProductDoc }{Body: []ProductDoc{}}, nil
+		return &struct{ Body []catalog.ProductSummary }{Body: []catalog.ProductSummary{}}, nil
 	}
-	docs, err := h.client.Search(ctx, input.Q, input.Limit, input.Category)
+
+	rows, err := h.pool.Query(ctx, `
+		WITH matched AS (
+			SELECT
+				p.id, p.name, p.sku, p.brand, p.price, p.old_price, p.sale_price,
+				p.image_url, p.stock_quantity, p.rating, p.review_count, p.is_featured, p.category_id,
+				GREATEST(
+					ts_rank(
+						to_tsvector('english', coalesce(p.description_plain, '') || ' ' || coalesce(p.summary_plain, '')),
+						plainto_tsquery('english', $1)
+					),
+					similarity(p.name, $1),
+					similarity(coalesce(p.brand, ''), $1),
+					similarity(p.sku, $1)
+				) AS rank
+			FROM products p
+			LEFT JOIN categories c ON c.id = p.category_id
+			WHERE p.is_published = true
+			  AND ($3 = '' OR c.slug = $3)
+		)
+		SELECT id::text, name, sku, brand, price::float8, old_price::float8, sale_price::float8,
+		       image_url, stock_quantity, rating::float8, review_count, is_featured, category_id::text
+		FROM matched
+		WHERE rank > $4
+		ORDER BY rank DESC
+		LIMIT $2`,
+		input.Q, input.Limit, input.Category, relevanceFloor)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("search failed", err)
 	}
-	return &struct{ Body []ProductDoc }{Body: docs}, nil
-}
 
-// RegisterAdmin wires the "rebuild the index from scratch" endpoint — run
-// once after this feature is first deployed (to backfill existing
-// products) and any time the index is suspected to have drifted; ongoing
-// freshness otherwise comes from the write-path hooks in
-// catalog.AdminHandlers.
-func RegisterAdmin(api huma.API, client *Client, authSvc *auth.Service) {
-	h := &adminHandlers{client: client, authSvc: authSvc}
-	huma.Register(api, huma.Operation{
-		OperationID: "admin-reindex-search",
-		Method:      http.MethodPost,
-		Path:        "/v1/admin/search/reindex",
-		Summary:     "Rebuild the product search index from Postgres (admin only)",
-	}, h.Reindex)
-}
-
-type adminHandlers struct {
-	client  *Client
-	authSvc *auth.Service
-}
-
-type reindexInput struct {
-	Authorization string `header:"Authorization"`
-}
-
-type reindexOutput struct {
-	Indexed int `json:"indexed"`
-}
-
-func (h *adminHandlers) Reindex(ctx context.Context, input *reindexInput) (*struct{ Body reindexOutput }, error) {
-	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
-		return nil, err
-	}
-	docs, err := AllProductDocs(ctx, h.client.pool)
+	products, err := pgx.CollectRows(rows, pgx.RowToStructByName[catalog.ProductSummary])
 	if err != nil {
-		return nil, huma.Error500InternalServerError("failed to load products", err)
+		return nil, huma.Error500InternalServerError("search failed", err)
 	}
-	if err := h.client.IndexProducts(ctx, docs); err != nil {
-		return nil, huma.Error500InternalServerError("failed to index products", err)
-	}
-	return &struct{ Body reindexOutput }{Body: reindexOutput{Indexed: len(docs)}}, nil
+	return &struct{ Body []catalog.ProductSummary }{Body: products}, nil
 }

@@ -239,7 +239,6 @@ func (h *AdminHandlers) ApplyCleanup(ctx context.Context, input *ApplyCleanupInp
 			continue
 		}
 		out.Body.Applied++
-		h.maybeIndex(ctx, u.ID)
 	}
 	return out, nil
 }

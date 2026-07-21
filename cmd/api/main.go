@@ -141,24 +141,11 @@ func main() {
 	auth.Register(api, authSvc)
 	auth.RegisterAdminUsers(api, authSvc)
 
-	// Search (Meilisearch) is optional infra, same "disabled until
-	// configured" pattern as R2 storage and KRA eTIMS below — product
-	// writes just skip indexing and /v1/search is never registered if
-	// MEILI_HOST isn't set.
-	var productIndexer catalog.ProductIndexer
-	if cfg.MeiliHost != "" {
-		searchClient := search.NewClient(cfg.MeiliHost, cfg.MeiliAPIKey, pool)
-		if err := searchClient.EnsureIndex(ctx); err != nil {
-			log.Printf("search: failed to configure Meilisearch index settings: %v", err)
-		}
-		search.Register(api, searchClient)
-		search.RegisterAdmin(api, searchClient, authSvc)
-		productIndexer = searchClient
-	} else {
-		log.Println("MEILI_HOST not configured — product search endpoints disabled")
-	}
+	// Product search runs directly against Postgres (full-text + pg_trgm),
+	// so it's always available — no external service to configure.
+	search.Register(api, pool)
 
-	catalog.RegisterAdmin(api, catalogRepo, authSvc, productIndexer)
+	catalog.RegisterAdmin(api, catalogRepo, authSvc)
 
 	aiCfg := ai.Config{GeminiAPIKey: cfg.GeminiAPIKey, GroqAPIKey: cfg.GroqAPIKey}
 	ai.RegisterGenerateBlog(api, aiCfg, authSvc)
@@ -173,10 +160,10 @@ func main() {
 	erp.Register(api, erp.NewRepo(pool), authSvc, r2Client)
 	store.Register(api, store.NewRepo(pool), authSvc)
 	newsletter.Register(api, newsletter.NewRepo(pool))
-	suppliersync.Register(api, mux, suppliersync.NewRepo(pool), authSvc, productIndexer)
+	suppliersync.Register(api, mux, suppliersync.NewRepo(pool), authSvc)
 	audit.Register(api, pool, authSvc)
 	account.Register(api, pool, authSvc)
-	importer.Register(api, pool, authSvc, r2Client, productIndexer, importer.Config{
+	importer.Register(api, pool, authSvc, r2Client, importer.Config{
 		GeminiAPIKey:     cfg.GeminiAPIKey,
 		BackendPublicURL: cfg.BackendPublicURL,
 	})

@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"context"
-	"log"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -11,17 +10,6 @@ import (
 	"gizmojunction/backend/internal/auth"
 )
 
-// ProductIndexer lets the search package keep its index in sync with every
-// catalog write. Defined here (not in search) so catalog never needs to
-// import search — main.go wires the concrete *search.Client in, and it's
-// nil whenever search isn't configured, in which case indexing calls are
-// skipped entirely (see maybeIndex/maybeDeindex below).
-type ProductIndexer interface {
-	IndexProductByID(ctx context.Context, id string) error
-	DeleteProduct(ctx context.Context, id string) error
-	DeleteAllProducts(ctx context.Context) error
-}
-
 // AdminHandlers holds the write-capable admin endpoints for
 // categories/brands/products — everything here is gated by
 // RequireRole(ADMIN), unlike the read-only, unauthenticated Handlers in
@@ -29,35 +17,13 @@ type ProductIndexer interface {
 type AdminHandlers struct {
 	repo    *Repo
 	authSvc *auth.Service
-	indexer ProductIndexer
-}
-
-// maybeIndex/maybeDeindex are best-effort: a Meilisearch hiccup should
-// never fail a product save, so errors are logged, not returned.
-func (h *AdminHandlers) maybeIndex(ctx context.Context, id string) {
-	if h.indexer == nil {
-		return
-	}
-	if err := h.indexer.IndexProductByID(ctx, id); err != nil {
-		log.Printf("search: failed to index product %s: %v", id, err)
-	}
-}
-
-func (h *AdminHandlers) maybeDeindex(ctx context.Context, id string) {
-	if h.indexer == nil {
-		return
-	}
-	if err := h.indexer.DeleteProduct(ctx, id); err != nil {
-		log.Printf("search: failed to remove product %s from index: %v", id, err)
-	}
 }
 
 // RegisterAdmin wires the admin catalog management endpoints (Phase 5a) —
 // the Go+Neon replacement for the admin categories/brands/products pages'
-// previous direct supabase.from(...) calls. indexer may be nil (search not
-// configured), in which case product writes simply skip indexing.
-func RegisterAdmin(api huma.API, repo *Repo, authSvc *auth.Service, indexer ProductIndexer) {
-	h := &AdminHandlers{repo: repo, authSvc: authSvc, indexer: indexer}
+// previous direct supabase.from(...) calls.
+func RegisterAdmin(api huma.API, repo *Repo, authSvc *auth.Service) {
+	h := &AdminHandlers{repo: repo, authSvc: authSvc}
 
 	huma.Register(api, huma.Operation{
 		OperationID: "admin-list-categories",
@@ -393,7 +359,6 @@ func (h *AdminHandlers) SaveProduct(ctx context.Context, input *SaveProductInput
 	if err != nil {
 		return nil, huma.Error500InternalServerError("failed to save product", err)
 	}
-	h.maybeIndex(ctx, product.ID)
 	return &struct{ Body AdminProduct }{Body: product}, nil
 }
 
@@ -409,7 +374,6 @@ func (h *AdminHandlers) DeleteProduct(ctx context.Context, input *DeleteProductI
 	if err := h.repo.DeleteProduct(ctx, input.ID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to delete product", err)
 	}
-	h.maybeDeindex(ctx, input.ID)
 	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
 	out.Body.Success = true
 	return out, nil
@@ -432,9 +396,6 @@ func (h *AdminHandlers) BulkUpdateCategory(ctx context.Context, input *BulkUpdat
 	}
 	if err := h.repo.BulkUpdateProductCategory(ctx, input.Body.ProductIDs, input.Body.CategoryID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to update products", err)
-	}
-	for _, id := range input.Body.ProductIDs {
-		h.maybeIndex(ctx, id)
 	}
 	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
 	out.Body.Success = true
@@ -459,9 +420,6 @@ func (h *AdminHandlers) BulkUpdateStatus(ctx context.Context, input *BulkUpdateS
 	if err := h.repo.BulkUpdateProductStatus(ctx, input.Body.ProductIDs, input.Body.IsPublished); err != nil {
 		return nil, huma.Error500InternalServerError("failed to update products", err)
 	}
-	for _, id := range input.Body.ProductIDs {
-		h.maybeIndex(ctx, id)
-	}
 	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
 	out.Body.Success = true
 	return out, nil
@@ -484,9 +442,6 @@ func (h *AdminHandlers) BulkDeleteProducts(ctx context.Context, input *BulkDelet
 	if err := h.repo.BulkDeleteProducts(ctx, input.Body.ProductIDs); err != nil {
 		return nil, huma.Error500InternalServerError("failed to delete products", err)
 	}
-	for _, id := range input.Body.ProductIDs {
-		h.maybeDeindex(ctx, id)
-	}
 	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
 	out.Body.Success = true
 	return out, nil
@@ -498,11 +453,6 @@ func (h *AdminHandlers) EmptyCatalog(ctx context.Context, input *adminAuthInput)
 	}
 	if err := h.repo.EmptyProductCatalog(ctx); err != nil {
 		return nil, huma.Error500InternalServerError("failed to empty catalog", err)
-	}
-	if h.indexer != nil {
-		if err := h.indexer.DeleteAllProducts(ctx); err != nil {
-			log.Printf("search: failed to clear index after empty catalog: %v", err)
-		}
 	}
 	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
 	out.Body.Success = true
