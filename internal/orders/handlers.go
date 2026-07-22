@@ -46,6 +46,13 @@ func Register(api huma.API, repo *Repo, authSvc *auth.Service, riverClient *rive
 	}, h.TrackOrder)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "list-own-orders",
+		Method:      http.MethodGet,
+		Path:        "/v1/me/orders",
+		Summary:     "The signed-in user's own orders, paginated",
+	}, h.MyOrders)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "get-own-order",
 		Method:      http.MethodGet,
 		Path:        "/v1/me/orders/{id}",
@@ -197,6 +204,35 @@ func (h *Handlers) TrackOrder(ctx context.Context, input *TrackOrderInput) (*Tra
 	}
 	out := &TrackOrderOutput{}
 	out.Body.Order = order
+	return out, nil
+}
+
+type MyOrdersInput struct {
+	Authorization string `header:"Authorization"`
+	Page          int    `query:"page" default:"1" minimum:"1"`
+	PageSize      int    `query:"page_size" default:"20" minimum:"1" maximum:"50"`
+}
+
+type MyOrdersOutput struct {
+	Body struct {
+		Orders []Order `json:"orders"`
+		Total  int     `json:"total"`
+	}
+}
+
+func (h *Handlers) MyOrders(ctx context.Context, input *MyOrdersInput) (*MyOrdersOutput, error) {
+	claims, err := h.authSvc.Authenticate(input.Authorization)
+	if err != nil {
+		return nil, err
+	}
+	offset := (input.Page - 1) * input.PageSize
+	orders, total, err := h.repo.MyOrders(ctx, claims.ProfileID, input.PageSize, offset)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("failed to load orders", err)
+	}
+	out := &MyOrdersOutput{}
+	out.Body.Orders = orders
+	out.Body.Total = total
 	return out, nil
 }
 

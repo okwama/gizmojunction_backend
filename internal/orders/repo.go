@@ -405,6 +405,36 @@ func (r *Repo) attachItems(ctx context.Context, orders []Order) error {
 	return nil
 }
 
+// MyOrders lists a signed-in customer's own orders, newest first, paginated.
+// Guest orders (customer_id NULL) never match — there is no email/session
+// to scope them safely by, matching the existing MyOrder single-order rule.
+func (r *Repo) MyOrders(ctx context.Context, customerID string, limit, offset int) ([]Order, int, error) {
+	var total int
+	if err := r.db.QueryRow(ctx, `SELECT count(*) FROM orders WHERE customer_id = $1::uuid`, customerID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT `+orderColumns+` FROM orders
+		WHERE customer_id = $1::uuid
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3`, customerID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	orders, err := pgx.CollectRows(rows, pgx.RowToStructByName[Order])
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := r.attachItems(ctx, orders); err != nil {
+		return nil, 0, err
+	}
+	if orders == nil {
+		orders = []Order{}
+	}
+	return orders, total, nil
+}
+
 func (r *Repo) OrderByID(ctx context.Context, id string) (*Order, error) {
 	rows, err := r.db.Query(ctx, `SELECT `+orderColumns+` FROM orders WHERE id = $1`, id)
 	if err != nil {
