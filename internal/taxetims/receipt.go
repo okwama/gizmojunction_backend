@@ -69,6 +69,39 @@ func RegisterReceipts(api huma.API, deps ReceiptDeps, authSvc *auth.Service) {
 	})
 }
 
+// RegisterQR serves the eTIMS verification QR for an order's tax invoice as
+// a PNG, generated on the fly and never stored. Deliberately unauthenticated
+// — same precedent as the customer receipt PDF (/v1/documents/{path}):
+// gated only by the order's UUID being unguessable, and the QR's payload is
+// a public KRA verification link anyone can already scan straight off the
+// printed receipt, so this endpoint exposes nothing the paper doesn't.
+// <img> tags can't carry an Authorization header, which rules out the
+// usual Bearer-gated pattern here.
+func RegisterQR(mux *http.ServeMux, deps ReceiptDeps) {
+	mux.HandleFunc("GET /v1/tax/receipts/{orderID}/qr.png", func(w http.ResponseWriter, r *http.Request) {
+		orderID := r.PathValue("orderID")
+
+		var cuin, sig string
+		err := deps.Repo.Pool.QueryRow(r.Context(), `
+			SELECT COALESCE(cu_invoice_number, ''), COALESCE(receipt_signature, '')
+			FROM tax_invoices WHERE order_id = $1 AND status = 'ISSUED'`, orderID).Scan(&cuin, &sig)
+		if err != nil || cuin == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		verificationURL := "https://etims.kra.go.ke/verify?cuin=" + cuin + "&sig=" + sig
+		png, err := qrcode.Encode(verificationURL, qrcode.Medium, 200)
+		if err != nil {
+			http.Error(w, "qr generation failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(png)
+	})
+}
+
 type receiptItem struct {
 	ProductID *string
 	Name      string

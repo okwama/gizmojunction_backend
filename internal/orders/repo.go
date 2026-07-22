@@ -37,13 +37,20 @@ type OrderItem struct {
 	Quantity  int32        `db:"quantity" json:"quantity"`
 	UnitPrice float64      `db:"unit_price" json:"unit_price"`
 	CostPrice float64      `db:"cost_price" json:"cost_price"`
-	Product   *ProductInfo `db:"-" json:"product,omitempty"`
+	// TaxClass is snapshotted at order time (see CreateOrder) so a receipt
+	// for a past order keeps showing the rate that applied at the sale,
+	// even if the product's classification changes later.
+	TaxClass string       `db:"tax_class" json:"tax_class"`
+	Product  *ProductInfo `db:"-" json:"product,omitempty"`
 }
 
 type TaxInvoiceInfo struct {
 	Status          *string `json:"status,omitempty"`
 	ReceiptPDFPath  *string `json:"receipt_pdf_path,omitempty"`
 	CUInvoiceNumber *string `json:"cu_invoice_number,omitempty"`
+	// TaxpayerPIN is the store's own KRA PIN as submitted with this
+	// invoice — printed on the thermal/A4 receipt's compliance block.
+	TaxpayerPIN *string `json:"taxpayer_pin,omitempty"`
 }
 
 type Order struct {
@@ -56,6 +63,11 @@ type Order struct {
 	ShippingAddress json.RawMessage `db:"shipping_address" json:"shipping_address,omitempty"`
 	PaymentMethod   *string         `db:"payment_method" json:"payment_method,omitempty"`
 	PaymentStatus   *string         `db:"payment_status" json:"payment_status,omitempty"`
+	// PaymentMetadata carries the provider reference (mpesa_receipt /
+	// paystack_ref, set by the payment webhooks) — same raw-passthrough
+	// convention as ShippingAddress; the receipt templates destructure
+	// whichever field is present.
+	PaymentMetadata json.RawMessage `db:"payment_metadata" json:"payment_metadata,omitempty"`
 	TotalCost       float64         `db:"total_cost" json:"total_cost"`
 	TotalProfit     float64         `db:"total_profit" json:"total_profit"`
 	TaxStatus       *string         `db:"tax_status" json:"tax_status,omitempty"`
@@ -69,7 +81,7 @@ type Order struct {
 
 const orderColumns = `id::text, customer_id::text, COALESCE(status::text, 'PENDING') AS status,
 	total_amount::float8, COALESCE(shipping_fee, 0)::float8 AS shipping_fee, delivery_method,
-	shipping_address, payment_method, payment_status,
+	shipping_address, payment_method, payment_status, payment_metadata,
 	COALESCE(total_cost, 0)::float8 AS total_cost, COALESCE(total_profit, 0)::float8 AS total_profit,
 	tax_status::text, tax_invoice_id::text, kra_pin, COALESCE(loyalty_enrolled, false) AS loyalty_enrolled, created_at`
 
@@ -155,12 +167,13 @@ func (r *Repo) CreateOrder(ctx context.Context, customerID *string, o NewOrder) 
 
 	type productRow struct {
 		price, cost float64
+		taxClass    string
 	}
 	products := map[string]productRow{}
 	rows, err := r.catalog.Query(ctx, `
 		SELECT id::text,
 			CASE WHEN sale_price IS NOT NULL AND sale_price > 0 THEN sale_price ELSE price END::float8,
-			COALESCE(cost_price, 0)::float8
+			COALESCE(cost_price, 0)::float8, COALESCE(tax_class, 'VAT_16')
 		FROM products WHERE id = ANY($1::uuid[]) AND is_published = true`, ids)
 	if err != nil {
 		return "", fmt.Errorf("price lookup: %w", err)
@@ -168,7 +181,7 @@ func (r *Repo) CreateOrder(ctx context.Context, customerID *string, o NewOrder) 
 	for rows.Next() {
 		var id string
 		var p productRow
-		if err := rows.Scan(&id, &p.price, &p.cost); err != nil {
+		if err := rows.Scan(&id, &p.price, &p.cost, &p.taxClass); err != nil {
 			rows.Close()
 			return "", err
 		}
@@ -224,9 +237,9 @@ func (r *Repo) CreateOrder(ctx context.Context, customerID *string, o NewOrder) 
 
 	for _, item := range o.Items {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO order_items (order_id, product_id, quantity, unit_price, cost_price)
-			VALUES ($1::uuid, $2::uuid, $3, $4, $5)`,
-			orderID, item.ProductID, item.Quantity, products[item.ProductID].price, products[item.ProductID].cost); err != nil {
+			INSERT INTO order_items (order_id, product_id, quantity, unit_price, cost_price, tax_class)
+			VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)`,
+			orderID, item.ProductID, item.Quantity, products[item.ProductID].price, products[item.ProductID].cost, products[item.ProductID].taxClass); err != nil {
 			return "", err
 		}
 	}
@@ -314,7 +327,7 @@ func (r *Repo) RestoreStock(ctx context.Context, orderID string) error {
 
 func (r *Repo) itemsFor(ctx context.Context, orderIDs []string) (map[string][]OrderItem, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT order_id::text, id::text, product_id::text, quantity, unit_price::float8, COALESCE(cost_price, 0)::float8
+		SELECT order_id::text, id::text, product_id::text, quantity, unit_price::float8, COALESCE(cost_price, 0)::float8, COALESCE(tax_class, 'VAT_16')
 		FROM order_items WHERE order_id = ANY($1::uuid[])`, orderIDs)
 	if err != nil {
 		return nil, err
@@ -326,7 +339,7 @@ func (r *Repo) itemsFor(ctx context.Context, orderIDs []string) (map[string][]Or
 	for rows.Next() {
 		var orderID string
 		var item OrderItem
-		if err := rows.Scan(&orderID, &item.ID, &item.ProductID, &item.Quantity, &item.UnitPrice, &item.CostPrice); err != nil {
+		if err := rows.Scan(&orderID, &item.ID, &item.ProductID, &item.Quantity, &item.UnitPrice, &item.CostPrice, &item.TaxClass); err != nil {
 			return nil, err
 		}
 		if item.ProductID != nil {
@@ -435,6 +448,20 @@ func (r *Repo) MyOrders(ctx context.Context, customerID string, limit, offset in
 	return orders, total, nil
 }
 
+// attachTaxInvoice loads the fields the receipt templates need (CUIN, store
+// PIN, status, receipt path) for a single order. No invoice yet (not
+// submitted, or eTIMS not configured) just leaves order.TaxInvoice nil.
+func (r *Repo) attachTaxInvoice(ctx context.Context, order *Order) {
+	var info TaxInvoiceInfo
+	err := r.db.QueryRow(ctx, `
+		SELECT status::text, receipt_pdf_path, cu_invoice_number, taxpayer_pin
+		FROM tax_invoices WHERE order_id = $1`, order.ID).
+		Scan(&info.Status, &info.ReceiptPDFPath, &info.CUInvoiceNumber, &info.TaxpayerPIN)
+	if err == nil {
+		order.TaxInvoice = &info
+	}
+}
+
 func (r *Repo) OrderByID(ctx context.Context, id string) (*Order, error) {
 	rows, err := r.db.Query(ctx, `SELECT `+orderColumns+` FROM orders WHERE id = $1`, id)
 	if err != nil {
@@ -451,6 +478,7 @@ func (r *Repo) OrderByID(ctx context.Context, id string) (*Order, error) {
 	if err := r.attachItems(ctx, list); err != nil {
 		return nil, err
 	}
+	r.attachTaxInvoice(ctx, &list[0])
 	return &list[0], nil
 }
 
@@ -484,13 +512,7 @@ func (r *Repo) TrackOrder(ctx context.Context, email, orderID string) (*Order, s
 	if err := r.attachItems(ctx, list); err != nil {
 		return nil, "", err
 	}
-
-	// The tracking page offers an invoice download — include the receipt
-	// path so it doesn't need a second lookup.
-	var receiptPath *string
-	if err := r.db.QueryRow(ctx, `SELECT receipt_pdf_path FROM tax_invoices WHERE order_id = $1`, list[0].ID).Scan(&receiptPath); err == nil && receiptPath != nil {
-		list[0].TaxInvoice = &TaxInvoiceInfo{ReceiptPDFPath: receiptPath}
-	}
+	r.attachTaxInvoice(ctx, &list[0])
 	return &list[0], "", nil
 }
 
