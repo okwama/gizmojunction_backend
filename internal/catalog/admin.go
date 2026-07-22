@@ -110,6 +110,13 @@ func RegisterAdmin(api huma.API, repo *Repo, authSvc *auth.Service) {
 	}, h.BulkUpdateStatus)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "admin-bulk-adjust-product-price",
+		Method:      http.MethodPost,
+		Path:        "/v1/admin/products/bulk-price",
+		Summary:     "Adjust price by percentage or fixed amount for a set of products (admin only)",
+	}, h.BulkAdjustPrice)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "admin-bulk-delete-products",
 		Method:      http.MethodPost,
 		Path:        "/v1/admin/products/bulk-delete",
@@ -419,6 +426,36 @@ func (h *AdminHandlers) BulkUpdateStatus(ctx context.Context, input *BulkUpdateS
 	}
 	if err := h.repo.BulkUpdateProductStatus(ctx, input.Body.ProductIDs, input.Body.IsPublished); err != nil {
 		return nil, huma.Error500InternalServerError("failed to update products", err)
+	}
+	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out.Body.Success = true
+	return out, nil
+}
+
+type BulkAdjustPriceInput struct {
+	Authorization string `header:"Authorization"`
+	Body          struct {
+		ProductIDs []string `json:"product_ids"`
+		// Mode is "percent" (Value is a percentage, e.g. 10 for +10%, -15
+		// for -15%) or "fixed" (Value is a KES amount added to the current
+		// price, negative to reduce).
+		Mode  string  `json:"mode" enum:"percent,fixed"`
+		Value float64 `json:"value"`
+	}
+}
+
+func (h *AdminHandlers) BulkAdjustPrice(ctx context.Context, input *BulkAdjustPriceInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+		return nil, err
+	}
+	if len(input.Body.ProductIDs) == 0 {
+		return nil, huma.Error400BadRequest("product_ids is required")
+	}
+	if input.Body.Mode != "percent" && input.Body.Mode != "fixed" {
+		return nil, huma.Error400BadRequest("mode must be \"percent\" or \"fixed\"")
+	}
+	if err := h.repo.BulkAdjustPrice(ctx, input.Body.ProductIDs, input.Body.Mode, input.Body.Value); err != nil {
+		return nil, huma.Error500InternalServerError("failed to adjust prices", err)
 	}
 	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
 	out.Body.Success = true

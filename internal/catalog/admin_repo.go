@@ -196,6 +196,23 @@ func (r *Repo) BulkDeleteProducts(ctx context.Context, ids []string) error {
 	return err
 }
 
+// BulkAdjustPrice recomputes each product's price from its own current
+// value in a single UPDATE (price on the right-hand side refers to the
+// row's existing value at update time) — never from a client-supplied
+// final price, so a stale admin-side preview or a tampered request can't
+// set an arbitrary price. Clamped at 0 so a large percentage/fixed
+// decrease can't push a price negative.
+func (r *Repo) BulkAdjustPrice(ctx context.Context, ids []string, mode string, value float64) error {
+	var expr string
+	if mode == "percent" {
+		expr = `GREATEST(ROUND((price * (1 + $2 / 100.0))::numeric, 2), 0)`
+	} else {
+		expr = `GREATEST(ROUND((price + $2)::numeric, 2), 0)`
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE products SET price = `+expr+`, updated_at = now() WHERE id = ANY($1::uuid[])`, ids, value)
+	return err
+}
+
 func (r *Repo) EmptyProductCatalog(ctx context.Context) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM products`)
 	return err
