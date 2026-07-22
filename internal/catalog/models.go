@@ -94,7 +94,7 @@ type AdminProduct struct {
 	IsFeatured      bool     `db:"is_featured" json:"is_featured"`
 	// required:false — the admin save form never sends it and UpsertProduct
 	// deliberately ignores it (publish state changes only via bulk-status).
-	IsPublished     bool     `db:"is_published" json:"is_published" required:"false"`
+	IsPublished bool `db:"is_published" json:"is_published" required:"false"`
 }
 
 // AdminPromotion is the admin-facing promotion shape: everything the

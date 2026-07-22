@@ -32,11 +32,11 @@ type ProductInfo struct {
 }
 
 type OrderItem struct {
-	ID        string       `db:"id" json:"id"`
-	ProductID *string      `db:"product_id" json:"product_id,omitempty"`
-	Quantity  int32        `db:"quantity" json:"quantity"`
-	UnitPrice float64      `db:"unit_price" json:"unit_price"`
-	CostPrice float64      `db:"cost_price" json:"cost_price"`
+	ID        string  `db:"id" json:"id"`
+	ProductID *string `db:"product_id" json:"product_id,omitempty"`
+	Quantity  int32   `db:"quantity" json:"quantity"`
+	UnitPrice float64 `db:"unit_price" json:"unit_price"`
+	CostPrice float64 `db:"cost_price" json:"cost_price"`
 	// TaxClass is snapshotted at order time (see CreateOrder) so a receipt
 	// for a past order keeps showing the rate that applied at the sale,
 	// even if the product's classification changes later.
@@ -73,6 +73,10 @@ type Order struct {
 	TaxStatus       *string         `db:"tax_status" json:"tax_status,omitempty"`
 	TaxInvoiceID    *string         `db:"tax_invoice_id" json:"tax_invoice_id,omitempty"`
 	KraPin          *string         `db:"kra_pin" json:"kra_pin,omitempty"`
+	// PaymentTerms is for the commercial/pro-forma invoice only (e.g. "Net
+	// 30", "Due on receipt") — separate from the KRA eTIMS tax invoice,
+	// which has its own compliance fields and doesn't need this.
+	PaymentTerms    *string         `db:"payment_terms" json:"payment_terms,omitempty"`
 	LoyaltyEnrolled bool            `db:"loyalty_enrolled" json:"loyalty_enrolled"`
 	CreatedAt       time.Time       `db:"created_at" json:"created_at"`
 	Items           []OrderItem     `db:"-" json:"order_items,omitempty"`
@@ -83,7 +87,7 @@ const orderColumns = `id::text, customer_id::text, COALESCE(status::text, 'PENDI
 	total_amount::float8, COALESCE(shipping_fee, 0)::float8 AS shipping_fee, delivery_method,
 	shipping_address, payment_method, payment_status, payment_metadata,
 	COALESCE(total_cost, 0)::float8 AS total_cost, COALESCE(total_profit, 0)::float8 AS total_profit,
-	tax_status::text, tax_invoice_id::text, kra_pin, COALESCE(loyalty_enrolled, false) AS loyalty_enrolled, created_at`
+	tax_status::text, tax_invoice_id::text, kra_pin, payment_terms, COALESCE(loyalty_enrolled, false) AS loyalty_enrolled, created_at`
 
 // --- Creation (checkout) ---
 
@@ -543,15 +547,16 @@ func (r *Repo) AdminList(ctx context.Context) ([]Order, error) {
 // UpdateOrder returns the order's previous status so the handler can tell
 // a real transition (fire shipped/pickup emails, restore stock on
 // cancellation) from a repeat save of the same status.
-func (r *Repo) UpdateOrder(ctx context.Context, id string, status, kraPin *string) (string, error) {
+func (r *Repo) UpdateOrder(ctx context.Context, id string, status, kraPin, paymentTerms *string) (string, error) {
 	var oldStatus string
 	err := r.db.QueryRow(ctx, `
 		UPDATE orders o SET
 			status = COALESCE($2::order_status, o.status),
-			kra_pin = COALESCE($3, o.kra_pin)
+			kra_pin = COALESCE($3, o.kra_pin),
+			payment_terms = COALESCE($4, o.payment_terms)
 		FROM (SELECT id, COALESCE(status::text, 'PENDING') AS status FROM orders WHERE id = $1 FOR UPDATE) prev
 		WHERE o.id = prev.id
-		RETURNING prev.status`, id, status, kraPin).Scan(&oldStatus)
+		RETURNING prev.status`, id, status, kraPin, paymentTerms).Scan(&oldStatus)
 	return oldStatus, err
 }
 

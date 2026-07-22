@@ -13,16 +13,18 @@ import (
 
 	"gizmojunction/backend/internal/auth"
 	"gizmojunction/backend/internal/jobs"
+	"gizmojunction/backend/internal/storage"
 )
 
 type Handlers struct {
 	repo    *Repo
 	authSvc *auth.Service
 	river   *river.Client[pgx.Tx]
+	store   *storage.Client // nil when R2 isn't configured — invoice generation disabled
 }
 
-func Register(api huma.API, repo *Repo, authSvc *auth.Service, riverClient *river.Client[pgx.Tx]) {
-	h := &Handlers{repo: repo, authSvc: authSvc, river: riverClient}
+func Register(api huma.API, repo *Repo, authSvc *auth.Service, riverClient *river.Client[pgx.Tx], store *storage.Client) {
+	h := &Handlers{repo: repo, authSvc: authSvc, river: riverClient, store: store}
 
 	huma.Register(api, huma.Operation{
 		OperationID: "create-order",
@@ -107,6 +109,40 @@ func Register(api huma.API, repo *Repo, authSvc *auth.Service, riverClient *rive
 		Path:        "/v1/admin/tax/orders",
 		Summary:     "Orders joined with their tax invoice for the Tax page (admin only)",
 	}, h.TaxOrders)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-generate-invoice",
+		Method:      http.MethodPost,
+		Path:        "/v1/admin/orders/{id}/invoice",
+		Summary:     "Generate a commercial/pro-forma invoice PDF and store it (admin only)",
+	}, h.GenerateInvoice)
+}
+
+type GenerateInvoiceInput struct {
+	Authorization string `header:"Authorization"`
+	ID            string `path:"id"`
+}
+
+type GenerateInvoiceOutput struct {
+	Body struct {
+		Path string `json:"path"`
+	}
+}
+
+func (h *Handlers) GenerateInvoice(ctx context.Context, input *GenerateInvoiceInput) (*GenerateInvoiceOutput, error) {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+		return nil, err
+	}
+	if h.store == nil {
+		return nil, huma.Error503ServiceUnavailable("document storage (R2) is not configured")
+	}
+	path, err := h.repo.GenerateInvoice(ctx, h.store, input.ID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("failed to generate invoice", err)
+	}
+	out := &GenerateInvoiceOutput{}
+	out.Body.Path = path
+	return out, nil
 }
 
 // --- Customer-facing ---
@@ -305,8 +341,9 @@ type AdminUpdateInput struct {
 	Authorization string `header:"Authorization"`
 	ID            string `path:"id"`
 	Body          struct {
-		Status *string `json:"status,omitempty"`
-		KraPin *string `json:"kra_pin,omitempty"`
+		Status       *string `json:"status,omitempty"`
+		KraPin       *string `json:"kra_pin,omitempty"`
+		PaymentTerms *string `json:"payment_terms,omitempty"`
 	}
 }
 
@@ -320,10 +357,10 @@ func (h *Handlers) AdminUpdate(ctx context.Context, input *AdminUpdateInput) (*s
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
-	if input.Body.Status == nil && input.Body.KraPin == nil {
+	if input.Body.Status == nil && input.Body.KraPin == nil && input.Body.PaymentTerms == nil {
 		return nil, huma.Error400BadRequest("nothing to update")
 	}
-	oldStatus, err := h.repo.UpdateOrder(ctx, input.ID, input.Body.Status, input.Body.KraPin)
+	oldStatus, err := h.repo.UpdateOrder(ctx, input.ID, input.Body.Status, input.Body.KraPin, input.Body.PaymentTerms)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, huma.Error404NotFound("Order not found.")
