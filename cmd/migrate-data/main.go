@@ -78,7 +78,15 @@ func main() {
 
 	ctx := context.Background()
 
-	srcPool, err := pgxpool.New(ctx, sourceURL)
+	// Supabase's pooled connection string goes through pgbouncer in
+	// transaction mode, which breaks pgx's prepared-statement cache — force
+	// the simple protocol on the source.
+	srcCfg, err := pgxpool.ParseConfig(sourceURL)
+	if err != nil {
+		log.Fatalf("parse source URL: %v", err)
+	}
+	srcCfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	srcPool, err := pgxpool.NewWithConfig(ctx, srcCfg)
 	if err != nil {
 		log.Fatalf("connect source: %v", err)
 	}

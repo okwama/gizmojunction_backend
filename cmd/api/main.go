@@ -10,7 +10,6 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
 	"gizmojunction/backend/internal/account"
@@ -48,23 +47,9 @@ func main() {
 
 	emailSender := jobs.NewEmailSender(cfg.ResendAPIKey)
 
-	// taxetimsRepo/taxetimsDeps are non-nil only when SUPABASE_DATABASE_URL
-	// is set — orders/tax_invoices still live in Supabase, not Neon (Phase
-	// 5 hasn't moved them yet), so eTIMS endpoints are simply unregistered
-	// rather than erroring when that connection isn't configured, matching
-	// the R2/storage pattern below.
-	var taxetimsRepo *taxetims.Repo
-	var supabasePool *pgxpool.Pool
-	if cfg.SupabaseDatabaseURL != "" {
-		supabasePool, err = db.Connect(ctx, cfg.SupabaseDatabaseURL)
-		if err != nil {
-			log.Fatalf("connect to supabase database: %v", err)
-		}
-		defer supabasePool.Close()
-		taxetimsRepo = taxetims.NewRepo(supabasePool)
-	} else {
-		log.Println("SUPABASE_DATABASE_URL not configured — KRA eTIMS endpoints disabled")
-	}
+	// Orders, payments, and eTIMS all live in Neon now — the transitional
+	// second Supabase pool is gone (data copied via cmd/migrate-data).
+	taxetimsRepo := taxetims.NewRepo(pool)
 
 	// r2Client is created before the river client because the tax worker
 	// now renders receipt PDFs in-process (Phase 6) and needs storage. It
@@ -80,21 +65,15 @@ func main() {
 		log.Println("R2 not configured (R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET) — document upload/redirect endpoints disabled")
 	}
 
-	var receiptDeps taxetims.ReceiptDeps
-	if taxetimsRepo != nil {
-		receiptDeps = taxetims.ReceiptDeps{Repo: taxetimsRepo, Catalog: pool, Store: r2Client}
-	}
+	receiptDeps := taxetims.ReceiptDeps{Repo: taxetimsRepo, Catalog: pool, Store: r2Client}
 
 	riverClient, err := jobs.NewClient(jobs.Deps{
 		Pool:       pool,
-		OrdersPool: supabasePool,
+		OrdersPool: pool,
 		Email:      emailSender,
 		SiteURL:    cfg.SiteURL,
 		AdminEmail: cfg.AdminEmail,
 	}, func(workers *river.Workers) {
-		if taxetimsRepo == nil {
-			return
-		}
 		river.AddWorker(workers, &taxetims.TaxInvoiceSubmitWorker{
 			Repo:       taxetimsRepo,
 			Client:     taxetims.NewClient(cfg.KRAEnv),
@@ -168,52 +147,34 @@ func main() {
 		BackendPublicURL: cfg.BackendPublicURL,
 	})
 
-	// Orders live in Supabase until the Phase 6 payment-webhook cutover, so
-	// the whole orders domain rides the same second pool as eTIMS and is
-	// disabled without it.
-	if supabasePool != nil {
-		orders.Register(api, orders.NewRepo(supabasePool, pool), authSvc)
-	} else {
-		log.Println("SUPABASE_DATABASE_URL not configured — orders endpoints disabled")
-	}
+	orders.Register(api, orders.NewRepo(pool, pool), authSvc)
 
-	var taxetimsDepsPtr *taxetims.Deps
-	if taxetimsRepo != nil {
-		taxetimsDeps := taxetims.Deps{
-			Repo:               taxetimsRepo,
-			RiverClient:        riverClient,
-			InternalSecret:     cfg.InternalSecret,
-			DefaultTaxpayerPIN: cfg.KRADefaultTaxpayerPIN,
-		}
-		taxetims.RegisterInternal(mux, taxetimsDeps)
-		taxetims.RegisterAdmin(api, taxetimsDeps, authSvc)
-		taxetims.RegisterReceipts(api, receiptDeps, authSvc)
-		taxetimsDepsPtr = &taxetimsDeps
+	taxetimsDeps := taxetims.Deps{
+		Repo:               taxetimsRepo,
+		RiverClient:        riverClient,
+		InternalSecret:     cfg.InternalSecret,
+		DefaultTaxpayerPIN: cfg.KRADefaultTaxpayerPIN,
 	}
+	taxetims.RegisterInternal(mux, taxetimsDeps)
+	taxetims.RegisterAdmin(api, taxetimsDeps, authSvc)
+	taxetims.RegisterReceipts(api, receiptDeps, authSvc)
 
-	// Payments (Phase 6) ride the same transitional Supabase orders pool.
-	// M-Pesa flips per STK push (its callback URL is in each request);
-	// Paystack flips when the dashboard webhook URL is repointed here.
-	if supabasePool != nil {
-		payments.Register(api, mux, &payments.Deps{
-			Orders:   supabasePool,
-			River:    riverClient,
-			Taxetims: taxetimsDepsPtr,
-			Cfg: payments.Config{
-				MpesaConsumerKey:    cfg.MpesaConsumerKey,
-				MpesaConsumerSecret: cfg.MpesaConsumerSecret,
-				MpesaPasskey:        cfg.MpesaPasskey,
-				MpesaShortcode:      cfg.MpesaShortcode,
-				MpesaTillNumber:     cfg.MpesaTillNumber,
-				MpesaEnvironment:    cfg.MpesaEnvironment,
-				PaystackSecretKey:   cfg.PaystackSecretKey,
-				BackendPublicURL:    cfg.BackendPublicURL,
-				SiteURL:             cfg.SiteURL,
-			},
-		})
-	} else {
-		log.Println("SUPABASE_DATABASE_URL not configured — payment endpoints disabled")
-	}
+	payments.Register(api, mux, &payments.Deps{
+		Orders:   pool,
+		River:    riverClient,
+		Taxetims: &taxetimsDeps,
+		Cfg: payments.Config{
+			MpesaConsumerKey:    cfg.MpesaConsumerKey,
+			MpesaConsumerSecret: cfg.MpesaConsumerSecret,
+			MpesaPasskey:        cfg.MpesaPasskey,
+			MpesaShortcode:      cfg.MpesaShortcode,
+			MpesaTillNumber:     cfg.MpesaTillNumber,
+			MpesaEnvironment:    cfg.MpesaEnvironment,
+			PaystackSecretKey:   cfg.PaystackSecretKey,
+			BackendPublicURL:    cfg.BackendPublicURL,
+			SiteURL:             cfg.SiteURL,
+		},
+	})
 
 	handler := corsMiddleware(cfg.CORSOrigin, mux)
 

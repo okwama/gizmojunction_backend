@@ -23,10 +23,9 @@ type Config struct {
 	InternalSecret string
 	JWTSecret      string
 
-	// SupabaseDatabaseURL is a transitional second Postgres connection —
-	// orders/tax_invoices still live in Supabase, not Neon, until Phase 5
-	// moves CRUD over. Used only by the taxetims package. Empty disables
-	// eTIMS endpoint registration entirely (see cmd/api/main.go).
+	// SupabaseDatabaseURL is no longer used by the API server — all domains
+	// run on DATABASE_URL (Neon). Kept only as the default --source for
+	// cmd/migrate-data delta re-copies during decommissioning.
 	SupabaseDatabaseURL    string
 	SupabaseURL            string
 	SupabaseServiceRoleKey string

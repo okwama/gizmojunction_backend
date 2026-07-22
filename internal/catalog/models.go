@@ -92,7 +92,9 @@ type AdminProduct struct {
 	ImageURL        *string  `db:"image_url" json:"image_url,omitempty"`
 	TaxClass        *string  `db:"tax_class" json:"tax_class,omitempty"`
 	IsFeatured      bool     `db:"is_featured" json:"is_featured"`
-	IsPublished     bool     `db:"is_published" json:"is_published"`
+	// required:false — the admin save form never sends it and UpsertProduct
+	// deliberately ignores it (publish state changes only via bulk-status).
+	IsPublished     bool     `db:"is_published" json:"is_published" required:"false"`
 }
 
 // AdminPromotion is the admin-facing promotion shape: everything the
