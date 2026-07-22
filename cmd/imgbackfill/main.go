@@ -32,10 +32,33 @@ const supabaseMarker = "supabase.co/storage"
 
 type cloudinary struct {
 	cloud, key, secret string
+	clockOffset        time.Duration // Cloudinary server time minus local time
 }
 
-func (c cloudinary) uploadFromURL(ctx context.Context, srcURL string) (string, error) {
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+// syncClock measures the skew between this machine and Cloudinary's servers
+// via the Date response header — the local clock here is over an hour off,
+// and Cloudinary rejects signature timestamps more than 1h stale.
+func (c *cloudinary) syncClock(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://api.cloudinary.com/v1_1/"+c.cloud+"/image/upload", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	serverTime, err := http.ParseTime(resp.Header.Get("Date"))
+	if err != nil {
+		return fmt.Errorf("no parseable Date header: %w", err)
+	}
+	c.clockOffset = time.Until(serverTime)
+	fmt.Printf("Clock skew vs Cloudinary: %s\n", c.clockOffset.Round(time.Second))
+	return nil
+}
+
+func (c *cloudinary) uploadFromURL(ctx context.Context, srcURL string) (string, error) {
+	ts := fmt.Sprintf("%d", time.Now().Add(c.clockOffset).Unix())
 	sig := sha1.Sum([]byte("timestamp=" + ts + c.secret))
 
 	form := url.Values{}
@@ -81,7 +104,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cld := cloudinary{
+	cld := &cloudinary{
 		cloud:  os.Getenv("CLOUDINARY_CLOUD_NAME"),
 		key:    os.Getenv("CLOUDINARY_API_KEY"),
 		secret: os.Getenv("CLOUDINARY_API_SECRET"),
@@ -91,6 +114,11 @@ func main() {
 	}
 
 	ctx := context.Background()
+	if *apply {
+		if err := cld.syncClock(ctx); err != nil {
+			log.Fatalf("clock sync: %v", err)
+		}
+	}
 	neon, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("neon connect: %v", err)
@@ -200,7 +228,7 @@ func main() {
 	fmt.Printf("products.gallery migrated: %d products ok, %d image failures\n", gok, gfailed)
 
 	// --- categories.image_url / brands.logo_url ---
-	for _, t := range []struct{ table, col string }{{"categories", "image_url"}, {"brands", "logo_url"}} {
+	for _, t := range []struct{ table, col string }{{"categories", "image_url"}, {"brands", "logo_url"}, {"promotions", "banner_url"}, {"blog_posts", "cover_image"}} {
 		trows, err := neon.Query(ctx, `SELECT id::text, `+t.col+` FROM `+t.table+` WHERE `+t.col+` LIKE '%'||$1||'%'`, supabaseMarker)
 		if err != nil {
 			log.Fatal(err)
