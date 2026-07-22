@@ -1,9 +1,6 @@
-// Package orders owns the orders domain during the transition: rows live in
-// Supabase's Postgres (reached via SUPABASE_DATABASE_URL, same pattern as
-// taxetims) because the M-Pesa/Paystack webhooks — Phase 6 — still write
-// payment status there. Product/profile lookups hit the Neon pool, where
-// the catalog and auth now live. At Phase 6 cutover the Supabase pool gets
-// repointed at Neon and this package needs no code changes.
+// Package orders owns the orders domain. Since the July 2026 cutover both
+// pools point at Neon; the db/catalog split is kept only because the queries
+// are already written against it.
 package orders
 
 import (
@@ -79,15 +76,20 @@ const orderColumns = `id::text, customer_id::text, COALESCE(status::text, 'PENDI
 // --- Creation (checkout) ---
 
 type NewOrderItem struct {
-	ProductID string  `json:"product_id"`
-	Quantity  int32   `json:"quantity" minimum:"1"`
-	UnitPrice float64 `json:"unit_price"`
+	ProductID string `json:"product_id"`
+	Quantity  int32  `json:"quantity" minimum:"1"`
+	// UnitPrice is accepted for API compatibility but ignored — prices are
+	// snapshotted server-side from the catalog.
+	UnitPrice float64 `json:"unit_price,omitempty" required:"false"`
 }
 
 type NewOrder struct {
-	Items           []NewOrderItem  `json:"items"`
-	TotalAmount     float64         `json:"total_amount"`
-	ShippingFee     float64         `json:"shipping_fee"`
+	Items []NewOrderItem `json:"items"`
+	// TotalAmount and ShippingFee are still accepted for API compatibility
+	// but ignored — both are recomputed server-side from the catalog and
+	// shipping_zones so a tampered request can't set its own prices.
+	TotalAmount     float64         `json:"total_amount,omitempty" required:"false"`
+	ShippingFee     float64         `json:"shipping_fee,omitempty" required:"false"`
 	DeliveryMethod  string          `json:"delivery_method,omitempty"`
 	PaymentMethod   string          `json:"payment_method"`
 	ShippingAddress json.RawMessage `json:"shipping_address"`
@@ -95,29 +97,82 @@ type NewOrder struct {
 	LoyaltyEnrolled bool            `json:"loyalty_enrolled,omitempty"`
 }
 
-// CreateOrder snapshots cost prices from the Neon catalog server-side (the
-// old checkout fetched cost_price into the browser with the anon key — a
-// real margin-data leak this closes) and writes order + items in one
-// transaction.
+// freeDeliveryThreshold mirrors FREE_DELIVERY_THRESHOLD in the checkout
+// page — orders at or above it ship free.
+const freeDeliveryThreshold = 5000
+
+// ErrUnavailable marks checkout rejections the customer can act on
+// (unknown/unpublished product); handlers map it to a 400, not a 500.
+var ErrUnavailable = errors.New("product unavailable")
+
+// shippingFeeFor recomputes the delivery fee server-side: pickup is always
+// free, orders over the threshold are free, otherwise the county's zone
+// rate applies. Unknown county falls back to 0 (matching the checkout UI,
+// which shows "Rate unavailable" but still allows the order).
+func (r *Repo) shippingFeeFor(ctx context.Context, deliveryMethod, county string, subtotal float64) (float64, error) {
+	if deliveryMethod == "pickup" || subtotal >= freeDeliveryThreshold || county == "" {
+		return 0, nil
+	}
+	col := "standard_fee"
+	if deliveryMethod == "express" {
+		col = "express_fee"
+	}
+	var fee float64
+	err := r.db.QueryRow(ctx, `
+		SELECT `+col+`::float8 FROM shipping_zones
+		WHERE is_active = true AND $1 = ANY(counties)
+		ORDER BY sort_order LIMIT 1`, county).Scan(&fee)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return fee, err
+}
+
+// CreateOrder prices the order entirely server-side: unit prices (sale
+// price when set, list price otherwise), cost prices, and the shipping fee
+// all come from the database, never the request — the client's
+// unit_price/total_amount are ignored, so a tampered checkout request
+// can't buy at its own price. Order + items are written in one
+// transaction; COD orders also deduct stock immediately (online payments
+// deduct when the payment webhook confirms).
 func (r *Repo) CreateOrder(ctx context.Context, customerID *string, o NewOrder) (string, error) {
+	method := o.DeliveryMethod
+	switch method {
+	case "", "standard":
+		method = "standard"
+	case "express", "pickup":
+	default:
+		return "", fmt.Errorf("%w: unknown delivery method %q", ErrUnavailable, o.DeliveryMethod)
+	}
+
 	ids := make([]string, 0, len(o.Items))
 	for _, item := range o.Items {
+		if item.Quantity <= 0 {
+			return "", fmt.Errorf("%w: invalid quantity", ErrUnavailable)
+		}
 		ids = append(ids, item.ProductID)
 	}
 
-	costMap := map[string]float64{}
-	rows, err := r.catalog.Query(ctx, `SELECT id::text, COALESCE(cost_price, 0)::float8 FROM products WHERE id = ANY($1::uuid[])`, ids)
+	type productRow struct {
+		price, cost float64
+	}
+	products := map[string]productRow{}
+	rows, err := r.catalog.Query(ctx, `
+		SELECT id::text,
+			CASE WHEN sale_price IS NOT NULL AND sale_price > 0 THEN sale_price ELSE price END::float8,
+			COALESCE(cost_price, 0)::float8
+		FROM products WHERE id = ANY($1::uuid[]) AND is_published = true`, ids)
 	if err != nil {
-		return "", fmt.Errorf("cost lookup: %w", err)
+		return "", fmt.Errorf("price lookup: %w", err)
 	}
 	for rows.Next() {
 		var id string
-		var cost float64
-		if err := rows.Scan(&id, &cost); err != nil {
+		var p productRow
+		if err := rows.Scan(&id, &p.price, &p.cost); err != nil {
 			rows.Close()
 			return "", err
 		}
-		costMap[id] = cost
+		products[id] = p
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -126,10 +181,28 @@ func (r *Repo) CreateOrder(ctx context.Context, customerID *string, o NewOrder) 
 
 	var totalCost, subtotal float64
 	for _, item := range o.Items {
-		totalCost += costMap[item.ProductID] * float64(item.Quantity)
-		subtotal += item.UnitPrice * float64(item.Quantity)
+		p, ok := products[item.ProductID]
+		if !ok {
+			return "", fmt.Errorf("%w: product %s is no longer available", ErrUnavailable, item.ProductID)
+		}
+		totalCost += p.cost * float64(item.Quantity)
+		subtotal += p.price * float64(item.Quantity)
 	}
 	totalProfit := subtotal - totalCost
+
+	county := ""
+	if len(o.ShippingAddress) > 0 {
+		var sa struct {
+			County string `json:"county"`
+		}
+		_ = json.Unmarshal(o.ShippingAddress, &sa)
+		county = sa.County
+	}
+	shippingFee, err := r.shippingFeeFor(ctx, method, county, subtotal)
+	if err != nil {
+		return "", fmt.Errorf("shipping fee lookup: %w", err)
+	}
+	totalAmount := subtotal + shippingFee
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -143,7 +216,7 @@ func (r *Repo) CreateOrder(ctx context.Context, customerID *string, o NewOrder) 
 			status, payment_method, payment_status, shipping_address, kra_pin, loyalty_enrolled)
 		VALUES ($1::uuid, $2, $3, $4, $5, $6, 'PENDING', $7, 'unpaid', $8, NULLIF($9, ''), $10)
 		RETURNING id::text`,
-		customerID, o.TotalAmount, o.ShippingFee, o.DeliveryMethod, totalCost, totalProfit,
+		customerID, totalAmount, shippingFee, method, totalCost, totalProfit,
 		o.PaymentMethod, o.ShippingAddress, o.KraPin, o.LoyaltyEnrolled).Scan(&orderID)
 	if err != nil {
 		return "", err
@@ -153,12 +226,88 @@ func (r *Repo) CreateOrder(ctx context.Context, customerID *string, o NewOrder) 
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO order_items (order_id, product_id, quantity, unit_price, cost_price)
 			VALUES ($1::uuid, $2::uuid, $3, $4, $5)`,
-			orderID, item.ProductID, item.Quantity, item.UnitPrice, costMap[item.ProductID]); err != nil {
+			orderID, item.ProductID, item.Quantity, products[item.ProductID].price, products[item.ProductID].cost); err != nil {
+			return "", err
+		}
+	}
+
+	// COD/pay-on-collection orders go straight to fulfilment, so their
+	// stock leaves the shelf now; online payments deduct on the paid
+	// webhook instead (see DecrementStock).
+	if o.PaymentMethod == "cod" {
+		if err := decrementStockTx(ctx, tx, orderID); err != nil {
 			return "", err
 		}
 	}
 
 	return orderID, tx.Commit(ctx)
+}
+
+// decrementStockTx deducts an order's quantities from product stock and
+// flags the order, inside the caller's transaction. The stock_decremented
+// guard makes it idempotent — a second call for the same order is a no-op.
+func decrementStockTx(ctx context.Context, tx pgx.Tx, orderID string) error {
+	var already bool
+	if err := tx.QueryRow(ctx, `
+		SELECT stock_decremented FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&already); err != nil {
+		return fmt.Errorf("stock flag lookup: %w", err)
+	}
+	if already {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE products p SET stock_quantity = GREATEST(p.stock_quantity - oi.quantity, 0)
+		FROM order_items oi
+		WHERE oi.order_id = $1 AND p.id = oi.product_id`, orderID); err != nil {
+		return fmt.Errorf("stock decrement: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE orders SET stock_decremented = true WHERE id = $1`, orderID); err != nil {
+		return fmt.Errorf("stock flag update: %w", err)
+	}
+	return nil
+}
+
+// DecrementStock is the standalone form used by the payment webhooks once
+// an order transitions to paid.
+func (r *Repo) DecrementStock(ctx context.Context, orderID string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := decrementStockTx(ctx, tx, orderID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// RestoreStock reverses a previous decrement when an order is cancelled.
+// Only orders whose stock was actually deducted are restored.
+func (r *Repo) RestoreStock(ctx context.Context, orderID string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var decremented bool
+	if err := tx.QueryRow(ctx, `
+		SELECT stock_decremented FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&decremented); err != nil {
+		return fmt.Errorf("stock flag lookup: %w", err)
+	}
+	if !decremented {
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE products p SET stock_quantity = p.stock_quantity + oi.quantity
+		FROM order_items oi
+		WHERE oi.order_id = $1 AND p.id = oi.product_id`, orderID); err != nil {
+		return fmt.Errorf("stock restore: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE orders SET stock_decremented = false WHERE id = $1`, orderID); err != nil {
+		return fmt.Errorf("stock flag update: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // --- Reads ---
@@ -339,19 +488,19 @@ func (r *Repo) AdminList(ctx context.Context) ([]Order, error) {
 	return orders, nil
 }
 
-func (r *Repo) UpdateOrder(ctx context.Context, id string, status, kraPin *string) error {
-	tag, err := r.db.Exec(ctx, `
-		UPDATE orders SET
-			status = COALESCE($2::order_status, status),
-			kra_pin = COALESCE($3, kra_pin)
-		WHERE id = $1`, id, status, kraPin)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
-	}
-	return nil
+// UpdateOrder returns the order's previous status so the handler can tell
+// a real transition (fire shipped/pickup emails, restore stock on
+// cancellation) from a repeat save of the same status.
+func (r *Repo) UpdateOrder(ctx context.Context, id string, status, kraPin *string) (string, error) {
+	var oldStatus string
+	err := r.db.QueryRow(ctx, `
+		UPDATE orders o SET
+			status = COALESCE($2::order_status, o.status),
+			kra_pin = COALESCE($3, o.kra_pin)
+		FROM (SELECT id, COALESCE(status::text, 'PENDING') AS status FROM orders WHERE id = $1 FOR UPDATE) prev
+		WHERE o.id = prev.id
+		RETURNING prev.status`, id, status, kraPin).Scan(&oldStatus)
+	return oldStatus, err
 }
 
 func (r *Repo) PaidOrders(ctx context.Context) ([]Order, error) {

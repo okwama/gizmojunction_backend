@@ -63,7 +63,10 @@ func (d *Deps) mpesaAccessToken(ctx context.Context) (string, error) {
 
 type StkPushInput struct {
 	Body struct {
-		Amount  float64 `json:"amount"`
+		// Amount is accepted for API compatibility but ignored — the
+		// charge amount always comes from the order row so a tampered
+		// request can't pay less than the order total.
+		Amount  float64 `json:"amount,omitempty" required:"false"`
 		Phone   string  `json:"phone"`
 		OrderID string  `json:"orderId"`
 	}
@@ -74,8 +77,13 @@ type StkPushOutput struct {
 }
 
 func (d *Deps) StkPush(ctx context.Context, input *StkPushInput) (*StkPushOutput, error) {
-	if input.Body.Amount <= 0 || input.Body.Phone == "" || input.Body.OrderID == "" {
-		return nil, huma.Error400BadRequest("Missing required fields: amount, phone, or orderId")
+	if input.Body.Phone == "" || input.Body.OrderID == "" {
+		return nil, huma.Error400BadRequest("Missing required fields: phone or orderId")
+	}
+
+	total, err := d.orderChargeAmount(ctx, input.Body.OrderID)
+	if err != nil {
+		return nil, err
 	}
 
 	token, err := d.mpesaAccessToken(ctx)
@@ -92,7 +100,7 @@ func (d *Deps) StkPush(ctx context.Context, input *StkPushInput) (*StkPushOutput
 		"Password":          password,
 		"Timestamp":         timestamp,
 		"TransactionType":   "CustomerBuyGoodsOnline",
-		"Amount":            int(input.Body.Amount + 0.5),
+		"Amount":            int(total + 0.5),
 		"PartyA":            input.Body.Phone,
 		"PartyB":            d.Cfg.MpesaTillNumber,
 		"PhoneNumber":       input.Body.Phone,
@@ -181,6 +189,13 @@ func (d *Deps) handleMpesaCallback(w http.ResponseWriter, r *http.Request) {
 			"completed_at":  time.Now().UTC().Format(time.RFC3339),
 		})
 
+		// The paid amount must match the order total (±1 KES for STK's
+		// integer rounding) — a mismatched callback leaves the order
+		// unpaid for manual review rather than confirming it. paidAmount
+		// 0 (metadata missing) skips the check rather than rejecting.
+		var paidAmount float64
+		_ = json.Unmarshal(orNull(items["Amount"]), &paidAmount)
+
 		// Idempotency the Deno version lacked: only the row that actually
 		// transitions to paid fires the side effects below. A duplicate
 		// callback matches zero rows and exits quietly.
@@ -188,9 +203,11 @@ func (d *Deps) handleMpesaCallback(w http.ResponseWriter, r *http.Request) {
 		err := d.Orders.QueryRow(ctx, `
 			UPDATE orders SET status = 'PROCESSING', payment_status = 'paid', payment_metadata = $2
 			WHERE payment_intent_id = $1 AND payment_status IS DISTINCT FROM 'paid'
-			RETURNING id::text`, cb.CheckoutRequestID, meta).Scan(&orderID)
+			  AND ($3 <= 0 OR abs(total_amount - $3) <= 1)
+			RETURNING id::text`, cb.CheckoutRequestID, meta, paidAmount).Scan(&orderID)
 		if err != nil {
-			log.Printf("payments: mpesa callback for %s matched no unpaid order (duplicate or unknown): %v", cb.CheckoutRequestID, err)
+			log.Printf("payments: mpesa callback for %s (amount %.0f) matched no unpaid order with that total (duplicate, unknown, or amount mismatch): %v",
+				cb.CheckoutRequestID, paidAmount, err)
 			writeJSON(w, http.StatusOK, map[string]any{"ResultCode": 0, "ResultDesc": "Success"})
 			return
 		}

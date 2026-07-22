@@ -19,7 +19,11 @@ import (
 type PaystackInitInput struct {
 	Origin string `header:"Origin"`
 	Body   struct {
-		Amount   float64         `json:"amount"`
+		// Amount is accepted for API compatibility but ignored — the
+		// charge always uses the order row's total (which includes the
+		// shipping fee the old client-supplied subtotal silently
+		// dropped).
+		Amount   float64         `json:"amount,omitempty" required:"false"`
 		Email    string          `json:"email"`
 		OrderID  string          `json:"orderId"`
 		Metadata json.RawMessage `json:"metadata,omitempty"`
@@ -31,8 +35,13 @@ type PaystackInitOutput struct {
 }
 
 func (d *Deps) PaystackInit(ctx context.Context, input *PaystackInitInput) (*PaystackInitOutput, error) {
-	if input.Body.Amount <= 0 || input.Body.Email == "" || input.Body.OrderID == "" {
-		return nil, huma.Error400BadRequest("Missing required fields: amount, email, or orderId")
+	if input.Body.Email == "" || input.Body.OrderID == "" {
+		return nil, huma.Error400BadRequest("Missing required fields: email or orderId")
+	}
+
+	total, err := d.orderChargeAmount(ctx, input.Body.OrderID)
+	if err != nil {
+		return nil, err
 	}
 
 	origin := input.Origin
@@ -52,7 +61,7 @@ func (d *Deps) PaystackInit(ctx context.Context, input *PaystackInitInput) (*Pay
 	}
 
 	payload, _ := json.Marshal(map[string]any{
-		"amount":    int(input.Body.Amount*100 + 0.5), // Paystack expects sub-units
+		"amount":    int(total*100 + 0.5), // Paystack expects sub-units
 		"email":     input.Body.Email,
 		"reference": fmt.Sprintf("ORD-%s-%d", input.Body.OrderID, time.Now().UnixMilli()),
 		"metadata":  metadata,
@@ -125,7 +134,8 @@ func (d *Deps) handlePaystackWebhook(w http.ResponseWriter, r *http.Request) {
 	var event struct {
 		Event string `json:"event"`
 		Data  struct {
-			Reference string `json:"reference"`
+			Reference string  `json:"reference"`
+			Amount    float64 `json:"amount"` // sub-units (cents)
 			Metadata  struct {
 				OrderID string `json:"order_id"`
 			} `json:"metadata"`
@@ -137,24 +147,39 @@ func (d *Deps) handlePaystackWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("payments: Paystack webhook event: %s", event.Event)
 
-	if event.Event == "charge.success" && event.Data.Metadata.OrderID != "" {
-		ctx := r.Context()
+	ctx := r.Context()
+	switch {
+	case event.Event == "charge.success" && event.Data.Metadata.OrderID != "":
 		meta, _ := json.Marshal(map[string]string{
 			"paystack_event": event.Event,
 			"paystack_ref":   event.Data.Reference,
 			"completed_at":   time.Now().UTC().Format(time.RFC3339),
 		})
 
+		// Same amount guard as M-Pesa: the paid amount (in sub-units)
+		// must match the order total or the order stays unpaid for
+		// manual review. Amount 0 (absent from payload) skips the check.
 		var orderID string
 		err := d.Orders.QueryRow(ctx, `
 			UPDATE orders SET payment_status = 'paid', status = 'PROCESSING', payment_metadata = $2
 			WHERE id = $1 AND payment_status IS DISTINCT FROM 'paid'
-			RETURNING id::text`, event.Data.Metadata.OrderID, meta).Scan(&orderID)
+			  AND ($3 <= 0 OR abs(total_amount * 100 - $3) <= 100)
+			RETURNING id::text`, event.Data.Metadata.OrderID, meta, event.Data.Amount).Scan(&orderID)
 		if err != nil {
-			log.Printf("payments: paystack charge.success for %s matched no unpaid order (duplicate or unknown): %v", event.Data.Metadata.OrderID, err)
+			log.Printf("payments: paystack charge.success for %s (amount %.0f) matched no unpaid order with that total (duplicate, unknown, or amount mismatch): %v",
+				event.Data.Metadata.OrderID, event.Data.Amount, err)
 		} else {
 			log.Printf("payments: order %s marked as paid via Paystack", orderID)
 			d.firePaidSideEffects(ctx, orderID)
+		}
+
+	case event.Event == "charge.failed" && event.Data.Metadata.OrderID != "":
+		// Surface failed card charges so the success page can leave its
+		// "awaiting payment" state instead of polling into the void.
+		if _, err := d.Orders.Exec(ctx, `
+			UPDATE orders SET payment_status = 'failed'
+			WHERE id = $1 AND payment_status IS DISTINCT FROM 'paid'`, event.Data.Metadata.OrderID); err != nil {
+			log.Printf("payments: failed to mark paystack failure for %s: %v", event.Data.Metadata.OrderID, err)
 		}
 	}
 

@@ -4,21 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 
 	"gizmojunction/backend/internal/auth"
+	"gizmojunction/backend/internal/jobs"
 )
 
 type Handlers struct {
 	repo    *Repo
 	authSvc *auth.Service
+	river   *river.Client[pgx.Tx]
 }
 
-func Register(api huma.API, repo *Repo, authSvc *auth.Service) {
-	h := &Handlers{repo: repo, authSvc: authSvc}
+func Register(api huma.API, repo *Repo, authSvc *auth.Service, riverClient *river.Client[pgx.Tx]) {
+	h := &Handlers{repo: repo, authSvc: authSvc, river: riverClient}
 
 	huma.Register(api, huma.Operation{
 		OperationID: "create-order",
@@ -128,8 +132,20 @@ func (h *Handlers) CreateOrder(ctx context.Context, input *CreateOrderInput) (*C
 
 	id, err := h.repo.CreateOrder(ctx, customerID, input.Body)
 	if err != nil {
+		if errors.Is(err, ErrUnavailable) {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
 		return nil, huma.Error500InternalServerError("failed to create order", err)
 	}
+
+	// COD/pay-on-collection orders have no payment webhook to trigger the
+	// buyer/admin emails, so they fire on placement instead.
+	if input.Body.PaymentMethod == "cod" && h.river != nil {
+		if _, err := h.river.Insert(ctx, jobs.OrderNotificationArgs{OrderID: id}, nil); err != nil {
+			log.Printf("orders: failed to enqueue COD notification for %s: %v", id, err)
+		}
+	}
+
 	out := &CreateOrderOutput{}
 	out.Body.ID = id
 	return out, nil
@@ -271,12 +287,37 @@ func (h *Handlers) AdminUpdate(ctx context.Context, input *AdminUpdateInput) (*s
 	if input.Body.Status == nil && input.Body.KraPin == nil {
 		return nil, huma.Error400BadRequest("nothing to update")
 	}
-	if err := h.repo.UpdateOrder(ctx, input.ID, input.Body.Status, input.Body.KraPin); err != nil {
+	oldStatus, err := h.repo.UpdateOrder(ctx, input.ID, input.Body.Status, input.Body.KraPin)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, huma.Error404NotFound("Order not found.")
 		}
 		return nil, huma.Error500InternalServerError("failed to update order", err)
 	}
+
+	// Side effects only on a genuine status transition, never on a repeat
+	// save of the same status.
+	if input.Body.Status != nil && *input.Body.Status != oldStatus {
+		switch *input.Body.Status {
+		case "SHIPPED":
+			if h.river != nil {
+				if _, err := h.river.Insert(ctx, jobs.OrderShippedNotificationArgs{OrderID: input.ID}, nil); err != nil {
+					log.Printf("orders: failed to enqueue shipped notification for %s: %v", input.ID, err)
+				}
+			}
+		case "READY_FOR_PICKUP":
+			if h.river != nil {
+				if _, err := h.river.Insert(ctx, jobs.OrderReadyForPickupArgs{OrderID: input.ID}, nil); err != nil {
+					log.Printf("orders: failed to enqueue pickup notification for %s: %v", input.ID, err)
+				}
+			}
+		case "CANCELLED":
+			if err := h.repo.RestoreStock(ctx, input.ID); err != nil {
+				log.Printf("orders: failed to restore stock for cancelled order %s: %v", input.ID, err)
+			}
+		}
+	}
+
 	out := &successOutput{}
 	out.Body.Success = true
 	return out, nil

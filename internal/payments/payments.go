@@ -28,20 +28,45 @@ type Config struct {
 }
 
 type Deps struct {
-	Orders   *pgxpool.Pool // the transitional Supabase orders pool
+	Orders   *pgxpool.Pool // Neon — same database as the catalog
 	River    *river.Client[pgx.Tx]
 	Taxetims *taxetims.Deps // nil when eTIMS isn't configured
 	Cfg      Config
+}
+
+// orderChargeAmount loads the authoritative amount to charge for an order —
+// initiation never trusts a client-supplied amount. Already-paid orders are
+// rejected so a stray re-initiation can't double-charge.
+func (d *Deps) orderChargeAmount(ctx context.Context, orderID string) (float64, error) {
+	var total float64
+	var paymentStatus *string
+	err := d.Orders.QueryRow(ctx, `
+		SELECT total_amount::float8, payment_status FROM orders WHERE id = $1`, orderID).
+		Scan(&total, &paymentStatus)
+	if err != nil {
+		return 0, huma.Error404NotFound("Order not found")
+	}
+	if paymentStatus != nil && *paymentStatus == "paid" {
+		return 0, huma.Error400BadRequest("This order is already paid")
+	}
+	if total <= 0 {
+		return 0, huma.Error400BadRequest("Order has no payable amount")
+	}
+	return total, nil
 }
 
 func (c Config) mpesaConfigured() bool {
 	return c.MpesaConsumerKey != "" && c.MpesaConsumerSecret != "" && c.MpesaPasskey != "" && c.BackendPublicURL != ""
 }
 
-// firePaidSideEffects runs once per successful transition to paid: the
-// buyer/admin notification emails (river) and the KRA eTIMS submission —
-// both in-process, replacing the Deno webhooks' fire-and-forget HTTP hop.
+// firePaidSideEffects runs once per successful transition to paid: stock
+// deduction, the buyer/admin notification emails (river), and the KRA
+// eTIMS submission — all in-process, replacing the Deno webhooks'
+// fire-and-forget HTTP hop.
 func (d *Deps) firePaidSideEffects(ctx context.Context, orderID string) {
+	if err := decrementStock(ctx, d.Orders, orderID); err != nil {
+		log.Printf("payments: failed to decrement stock for %s: %v", orderID, err)
+	}
 	if d.River != nil {
 		if _, err := d.River.Insert(ctx, jobs.OrderNotificationArgs{OrderID: orderID}, nil); err != nil {
 			log.Printf("payments: failed to enqueue order notification for %s: %v", orderID, err)
@@ -52,6 +77,36 @@ func (d *Deps) firePaidSideEffects(ctx context.Context, orderID string) {
 			log.Printf("payments: failed to enqueue tax invoice for %s: %v", orderID, err)
 		}
 	}
+}
+
+// decrementStock deducts the order's quantities from product stock, guarded
+// by orders.stock_decremented so it's idempotent (mirrors
+// orders.Repo.DecrementStock without the package dependency).
+func decrementStock(ctx context.Context, pool *pgxpool.Pool, orderID string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var already bool
+	if err := tx.QueryRow(ctx, `
+		SELECT stock_decremented FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&already); err != nil {
+		return err
+	}
+	if already {
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE products p SET stock_quantity = GREATEST(p.stock_quantity - oi.quantity, 0)
+		FROM order_items oi
+		WHERE oi.order_id = $1 AND p.id = oi.product_id`, orderID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE orders SET stock_decremented = true WHERE id = $1`, orderID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

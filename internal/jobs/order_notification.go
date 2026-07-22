@@ -245,7 +245,10 @@ func (w *OrderNotificationWorker) Work(ctx context.Context, job *river.Job[Order
 	}
 
 	status, statusLabel := "PAID", "(Paid)"
-	if isUnpaid {
+	switch {
+	case paymentMethod == "cod":
+		status, statusLabel = "COD — collect on delivery/pickup", "(COD)"
+	case isUnpaid:
 		status, statusLabel = "UNPAID", "(Unpaid)"
 	}
 	if err := w.Email.Send(ctx, EmailPayload{

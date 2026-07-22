@@ -147,7 +147,7 @@ func main() {
 		BackendPublicURL: cfg.BackendPublicURL,
 	})
 
-	orders.Register(api, orders.NewRepo(pool, pool), authSvc)
+	orders.Register(api, orders.NewRepo(pool, pool), authSvc, riverClient)
 
 	taxetimsDeps := taxetims.Deps{
 		Repo:               taxetimsRepo,

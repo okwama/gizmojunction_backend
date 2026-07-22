@@ -42,6 +42,7 @@ func NewClient(deps Deps, registerExtra ...func(*river.Workers)) (*river.Client[
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &OrderNotificationWorker{Pool: ordersPool, Email: deps.Email, SiteURL: deps.SiteURL, AdminEmail: deps.AdminEmail})
 	river.AddWorker(workers, &OrderShippedNotificationWorker{Pool: ordersPool, Email: deps.Email, SiteURL: deps.SiteURL})
+	river.AddWorker(workers, &OrderReadyForPickupWorker{Pool: ordersPool, Email: deps.Email, SiteURL: deps.SiteURL})
 	river.AddWorker(workers, &StockAlertsWorker{Pool: deps.Pool})
 	river.AddWorker(workers, &DailySalesSnapshotWorker{Pool: deps.Pool})
 	river.AddWorker(workers, &AbandonedCartRecoveryWorker{Pool: deps.Pool})
