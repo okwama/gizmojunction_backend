@@ -159,6 +159,13 @@ func main() {
 	taxetims.RegisterAdmin(api, taxetimsDeps, authSvc)
 	taxetims.RegisterReceipts(api, receiptDeps, authSvc)
 
+	// Logged once at startup, not per-request — sandbox vs. production is
+	// silent otherwise (sandbox accepts STK requests and calls back on its
+	// own simulated timer without ever reaching a real phone, which looks
+	// identical to a real failed payment from the checkout page).
+	log.Printf("payments: M-Pesa environment=%s till=%s configured=%v; Resend email configured=%v",
+		cfg.MpesaEnvironment, cfg.MpesaTillNumber, cfg.MpesaConsumerKey != "" && cfg.MpesaPasskey != "", cfg.ResendAPIKey != "")
+
 	payments.Register(api, mux, &payments.Deps{
 		Orders:   pool,
 		River:    riverClient,
