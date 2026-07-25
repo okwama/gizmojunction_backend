@@ -22,6 +22,7 @@ import (
 	"gizmojunction/backend/internal/erp"
 	"gizmojunction/backend/internal/importer"
 	"gizmojunction/backend/internal/jobs"
+	"gizmojunction/backend/internal/leads"
 	"gizmojunction/backend/internal/newsletter"
 	"gizmojunction/backend/internal/orders"
 	"gizmojunction/backend/internal/payments"
@@ -139,6 +140,7 @@ func main() {
 	erp.Register(api, erp.NewRepo(pool), authSvc, r2Client)
 	store.Register(api, store.NewRepo(pool), authSvc)
 	newsletter.Register(api, newsletter.NewRepo(pool))
+	leads.Register(api, leads.NewRepo(pool), emailSender, cfg.AdminEmail)
 	suppliersync.Register(api, mux, suppliersync.NewRepo(pool), authSvc)
 	audit.Register(api, pool, authSvc)
 	account.Register(api, pool, authSvc)
