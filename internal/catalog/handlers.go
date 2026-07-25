@@ -8,6 +8,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/errgroup"
 )
 
 type emptyInput struct{}
@@ -74,45 +75,54 @@ func (h *Handlers) ListCategories(ctx context.Context, _ *emptyInput) (*struct{ 
 }
 
 type CategoryProductsInput struct {
-	Slug     string `path:"slug"`
-	Page     int    `query:"page" default:"1" minimum:"1"`
-	PageSize int    `query:"page_size" default:"24" minimum:"1" maximum:"100"`
+	Slug     string  `path:"slug"`
+	Page     int     `query:"page" default:"1" minimum:"1"`
+	PageSize int     `query:"page_size" default:"24" minimum:"1" maximum:"100"`
+	Sort     string  `query:"sort" default:"newest" enum:"newest,price_asc,price_desc,best_match"`
+	Brands   string  `query:"brands" doc:"comma-separated brand names, multi-select refinement"`
+	MinPrice float64 `query:"min_price" minimum:"0"`
+	MaxPrice float64 `query:"max_price" minimum:"0"`
+	Rating   int     `query:"rating" default:"0" minimum:"0" maximum:"4" doc:"minimum star rating, e.g. 4 = 4 & up"`
+	InStock  bool    `query:"in_stock" default:"false"`
 }
 
 type CategoryProductsResponse struct {
-	Category      *Category        `json:"category,omitempty"`
-	Products      []ProductSummary `json:"products"`
-	AllCategories []Category       `json:"all_categories"`
-	Brands        []string         `json:"brands"`
-	Total         int              `json:"total"`
-	Page          int              `json:"page"`
-	PageSize      int              `json:"page_size"`
+	Category *Category        `json:"category,omitempty"`
+	Products []ProductSummary `json:"products"`
+	Facets   Facets           `json:"facets"`
+	Total    int              `json:"total"`
+	Page     int              `json:"page"`
+	PageSize int              `json:"page_size"`
 }
 
 func (h *Handlers) GetCategoryProducts(ctx context.Context, input *CategoryProductsInput) (*struct{ Body CategoryProductsResponse }, error) {
 	offset := (input.Page - 1) * input.PageSize
-
-	allCategories, err := h.repo.ListCategories(ctx)
-	if err != nil {
-		return nil, huma.Error500InternalServerError("failed to load categories", err)
+	filter := ProductFilter{
+		MinPrice:  input.MinPrice,
+		MaxPrice:  input.MaxPrice,
+		MinRating: input.Rating,
+		InStock:   input.InStock,
+		Brands:    splitAndTrim(input.Brands),
 	}
 
 	if input.Slug == "all" {
-		products, err := h.repo.ProductsAll(ctx, input.PageSize, offset)
-		if err != nil {
+		var products []ProductSummary
+		var total int
+		var facets Facets
+		g, gctx := errgroup.WithContext(ctx)
+		g.Go(func() (err error) {
+			products, err = h.repo.ProductsAll(gctx, filter, input.Sort, input.PageSize, offset)
+			return
+		})
+		g.Go(func() (err error) { total, err = h.repo.CountProductsAll(gctx, filter); return })
+		g.Go(func() (err error) { facets.Categories, err = h.repo.DepartmentFacets(gctx, filter); return })
+		g.Go(func() (err error) { facets.Brands, err = h.repo.BrandFacets(gctx, nil, filter); return })
+		g.Go(func() (err error) { facets.Ratings, err = h.repo.RatingFacet(gctx, nil, filter); return })
+		if err := g.Wait(); err != nil {
 			return nil, huma.Error500InternalServerError("failed to load products", err)
 		}
-		total, err := h.repo.CountProductsAll(ctx)
-		if err != nil {
-			return nil, huma.Error500InternalServerError("failed to count products", err)
-		}
-		brands, err := h.repo.DistinctBrandsAll(ctx)
-		if err != nil {
-			return nil, huma.Error500InternalServerError("failed to load brands", err)
-		}
 		return &struct{ Body CategoryProductsResponse }{Body: CategoryProductsResponse{
-			Products: products, AllCategories: allCategories, Brands: brands,
-			Total: total, Page: input.Page, PageSize: input.PageSize,
+			Products: products, Facets: facets, Total: total, Page: input.Page, PageSize: input.PageSize,
 		}}, nil
 	}
 
@@ -129,22 +139,30 @@ func (h *Handlers) GetCategoryProducts(ctx context.Context, input *CategoryProdu
 		return nil, huma.Error500InternalServerError("failed to resolve category tree", err)
 	}
 
-	products, err := h.repo.ProductsByCategoryIDs(ctx, categoryIDs, input.PageSize, offset)
-	if err != nil {
+	var products []ProductSummary
+	var total int
+	var facets Facets
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) {
+		products, err = h.repo.ProductsByCategoryIDs(gctx, categoryIDs, filter, input.Sort, input.PageSize, offset)
+		return
+	})
+	g.Go(func() (err error) { total, err = h.repo.CountProductsByCategoryIDs(gctx, categoryIDs, filter); return })
+	g.Go(func() (err error) { facets.Brands, err = h.repo.BrandFacets(gctx, categoryIDs, filter); return })
+	g.Go(func() (err error) { facets.Ratings, err = h.repo.RatingFacet(gctx, categoryIDs, filter); return })
+	if cat.ParentID == nil {
+		// Top-level department: offer its direct subcategories to drill into.
+		// A subcategory (ParentID != nil) has nothing further under it, per
+		// the 2-level assumption — Facets.Categories stays empty.
+		g.Go(func() (err error) { facets.Categories, err = h.repo.SubcategoryFacets(gctx, cat.ID, filter); return })
+	}
+	if err := g.Wait(); err != nil {
 		return nil, huma.Error500InternalServerError("failed to load products", err)
-	}
-	total, err := h.repo.CountProductsByCategoryIDs(ctx, categoryIDs)
-	if err != nil {
-		return nil, huma.Error500InternalServerError("failed to count products", err)
-	}
-	brands, err := h.repo.DistinctBrandsByCategoryIDs(ctx, categoryIDs)
-	if err != nil {
-		return nil, huma.Error500InternalServerError("failed to load brands", err)
 	}
 
 	catCopy := cat
 	return &struct{ Body CategoryProductsResponse }{Body: CategoryProductsResponse{
-		Category: &catCopy, Products: products, AllCategories: allCategories, Brands: brands,
+		Category: &catCopy, Products: products, Facets: facets,
 		Total: total, Page: input.Page, PageSize: input.PageSize,
 	}}, nil
 }

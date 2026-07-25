@@ -24,8 +24,63 @@ type ProductSummary struct {
 	IsFeatured  bool     `db:"is_featured" json:"is_featured"`
 	CategoryID  *string  `db:"category_id" json:"category_id,omitempty"`
 	// CategoryName is joined in (not just CategoryID) because the storefront's
-	// ProductFilters "Department" checkboxes filter client-side by name.
+	// ProductFilters "Department" checkboxes filter/display by name.
 	CategoryName *string `db:"category_name" json:"category_name,omitempty"`
+}
+
+// CategoryFacet is one entry in the Department facet returned alongside a
+// product listing. Meaning depends on the caller: direct subcategories of
+// the current category (category-page drill-down) or top-level departments
+// across the whole result set (search page, and the category page's
+// slug="all" case).
+type CategoryFacet struct {
+	ID    string `db:"id" json:"id"`
+	Name  string `db:"name" json:"name"`
+	Slug  string `db:"slug" json:"slug"`
+	Count int    `db:"count" json:"count"`
+}
+
+// BrandFacet is one Brand checkbox's live count.
+type BrandFacet struct {
+	Name  string `db:"name" json:"name"`
+	Count int    `db:"count" json:"count"`
+}
+
+// RatingFacet is one "N & up" bucket. Count respects every active filter
+// except the rating threshold itself (standard faceted-search rule).
+type RatingFacet struct {
+	Rating int `json:"rating"`
+	Count  int `json:"count"`
+}
+
+// Facets is the sidebar payload returned alongside a paginated product
+// listing. Categories is empty when there's nothing left to drill into
+// (e.g. already viewing a subcategory — see the 2-level category depth
+// assumption documented on ProductFilter).
+type Facets struct {
+	Categories []CategoryFacet `json:"categories"`
+	Brands     []BrandFacet    `json:"brands"`
+	Ratings    []RatingFacet   `json:"ratings"`
+}
+
+// ProductFilter bundles the optional filter dimensions shared by every
+// product-listing and facet-count query in this package. Zero value means
+// "no filter" on that dimension — same convention as the existing
+// `$1 = '' OR ...` optional-param pattern already used for category/brand
+// matching elsewhere in this backend. A struct (rather than more positional
+// args) avoids repeated signature churn as filter dimensions are added.
+//
+// The category tree is assumed to be exactly 2 levels deep (top-level
+// department + direct subcategories) — matches every existing UI surface
+// (Header.svelte's topCategories, MegaMenu, ProductFilters' own top-level
+// derivation). Facet queries resolve a product's top-level ancestor via a
+// single COALESCE(parent_id, id), not a recursive CTE.
+type ProductFilter struct {
+	MinPrice  float64  // 0 = no lower bound
+	MaxPrice  float64  // 0 = no upper bound
+	MinRating int      // 0 = none, else 1..4
+	InStock   bool
+	Brands    []string // canonical (post-COALESCE) brand names; nil/empty = no filter
 }
 
 type ProductDetail struct {
