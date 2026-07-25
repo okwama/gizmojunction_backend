@@ -20,10 +20,16 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
 }
 
-const productSummaryColumns = `id::text, name, sku, brand, price::float8, old_price::float8, sale_price::float8, image_url, stock_quantity, rating::float8, review_count, is_featured, category_id::text`
+// category_name is joined in here (rather than left for the frontend to
+// resolve from category_id) because ProductFilters.svelte's Department
+// checkboxes filter client-side by category *name* on both the category
+// listing and search pages — without it every product's category name was
+// undefined, so checking any department silently emptied the results.
+const productSummaryColumns = `p.id::text, p.name, p.sku, p.brand, p.price::float8, p.old_price::float8, p.sale_price::float8, p.image_url, p.stock_quantity, p.rating::float8, p.review_count, p.is_featured, p.category_id::text, c.name AS category_name`
+const productSummaryFrom = `products p LEFT JOIN categories c ON c.id = p.category_id`
 
 func (r *Repo) FeaturedProducts(ctx context.Context, limit int) ([]ProductSummary, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM products WHERE is_published = true ORDER BY updated_at DESC LIMIT $1`, limit)
+	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM `+productSummaryFrom+` WHERE p.is_published = true ORDER BY p.updated_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +39,7 @@ func (r *Repo) FeaturedProducts(ctx context.Context, limit int) ([]ProductSummar
 // RecentProductsAnyStatus is the fallback used only when FeaturedProducts
 // comes back empty (e.g. a fresh catalog with nothing published yet).
 func (r *Repo) RecentProductsAnyStatus(ctx context.Context, limit int) ([]ProductSummary, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM products ORDER BY updated_at DESC LIMIT $1`, limit)
+	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM `+productSummaryFrom+` ORDER BY p.updated_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +47,7 @@ func (r *Repo) RecentProductsAnyStatus(ctx context.Context, limit int) ([]Produc
 }
 
 func (r *Repo) NewArrivals(ctx context.Context, limit int) ([]ProductSummary, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM products WHERE is_published = true ORDER BY created_at DESC LIMIT $1`, limit)
+	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM `+productSummaryFrom+` WHERE p.is_published = true ORDER BY p.created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +187,7 @@ func (r *Repo) RecentBlogPosts(ctx context.Context, limit int) ([]BlogPostSummar
 }
 
 func (r *Repo) ProductsByCategoryIDs(ctx context.Context, categoryIDs []string, limit, offset int) ([]ProductSummary, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM products WHERE is_published = true AND category_id = ANY($1::uuid[]) ORDER BY created_at DESC LIMIT $2 OFFSET $3`, categoryIDs, limit, offset)
+	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM `+productSummaryFrom+` WHERE p.is_published = true AND p.category_id = ANY($1::uuid[]) ORDER BY p.created_at DESC LIMIT $2 OFFSET $3`, categoryIDs, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +201,7 @@ func (r *Repo) CountProductsByCategoryIDs(ctx context.Context, categoryIDs []str
 }
 
 func (r *Repo) ProductsAll(ctx context.Context, limit, offset int) ([]ProductSummary, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM products WHERE is_published = true ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM `+productSummaryFrom+` WHERE p.is_published = true ORDER BY p.created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +262,7 @@ func (r *Repo) SiblingCategories(ctx context.Context, parentID string) ([]Catego
 }
 
 func (r *Repo) RelatedProducts(ctx context.Context, categoryIDs []string, excludeID string, limit int) ([]ProductSummary, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM products WHERE is_published = true AND category_id = ANY($1::uuid[]) AND id != $2 ORDER BY created_at DESC LIMIT $3`, categoryIDs, excludeID, limit)
+	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM `+productSummaryFrom+` WHERE p.is_published = true AND p.category_id = ANY($1::uuid[]) AND p.id != $2 ORDER BY p.created_at DESC LIMIT $3`, categoryIDs, excludeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +270,7 @@ func (r *Repo) RelatedProducts(ctx context.Context, categoryIDs []string, exclud
 }
 
 func (r *Repo) UpsellProducts(ctx context.Context, brand, excludeID string, limit int) ([]ProductSummary, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM products WHERE is_published = true AND brand = $1 AND id != $2 ORDER BY rating DESC LIMIT $3`, brand, excludeID, limit)
+	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM `+productSummaryFrom+` WHERE p.is_published = true AND p.brand = $1 AND p.id != $2 ORDER BY p.rating DESC LIMIT $3`, brand, excludeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +289,7 @@ func (r *Repo) ProductsByIDs(ctx context.Context, ids []string) ([]ProductSummar
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM products WHERE id = ANY($1::uuid[])`, ids)
+	rows, err := r.pool.Query(ctx, `SELECT `+productSummaryColumns+` FROM `+productSummaryFrom+` WHERE p.id = ANY($1::uuid[])`, ids)
 	if err != nil {
 		return nil, err
 	}

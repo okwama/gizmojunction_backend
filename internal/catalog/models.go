@@ -23,6 +23,9 @@ type ProductSummary struct {
 	ReviewCount int32    `db:"review_count" json:"review_count"`
 	IsFeatured  bool     `db:"is_featured" json:"is_featured"`
 	CategoryID  *string  `db:"category_id" json:"category_id,omitempty"`
+	// CategoryName is joined in (not just CategoryID) because the storefront's
+	// ProductFilters "Department" checkboxes filter client-side by name.
+	CategoryName *string `db:"category_name" json:"category_name,omitempty"`
 }
 
 type ProductDetail struct {

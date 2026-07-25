@@ -53,7 +53,8 @@ const searchSelect = `
 	SELECT p.id::text, p.name, p.sku,
 	       COALESCE(NULLIF(p.brand, ''), b.name) AS brand,
 	       p.price::float8, p.old_price::float8, p.sale_price::float8,
-	       p.image_url, p.stock_quantity, p.rating::float8, p.review_count, p.is_featured, p.category_id::text
+	       p.image_url, p.stock_quantity, p.rating::float8, p.review_count, p.is_featured, p.category_id::text,
+	       c.name AS category_name
 	FROM products p
 	LEFT JOIN categories c ON c.id = p.category_id
 	LEFT JOIN brands b ON b.id = p.brand_id
