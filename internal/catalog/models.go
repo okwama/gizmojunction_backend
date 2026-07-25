@@ -63,6 +63,28 @@ type Facets struct {
 	Ratings    []RatingFacet   `json:"ratings"`
 }
 
+// Normalize replaces any nil slice with an empty one. A Go nil slice
+// encodes to JSON `null`, not `[]` — and every facet field here is a nil
+// slice whenever its query legitimately matched zero rows (pgx.CollectRows
+// never allocates when there's nothing to collect), or, for Categories
+// specifically, whenever the caller skipped populating it at all (e.g. a
+// leaf subcategory has nothing further to drill into). The frontend always
+// iterates these fields directly (e.g. `facets.categories.length`) without
+// a null-guard, so an unnormalized nil here is a real crash, not just an
+// empty list — this must be called before every response that includes
+// Facets.
+func (f *Facets) Normalize() {
+	if f.Categories == nil {
+		f.Categories = []CategoryFacet{}
+	}
+	if f.Brands == nil {
+		f.Brands = []BrandFacet{}
+	}
+	if f.Ratings == nil {
+		f.Ratings = []RatingFacet{}
+	}
+}
+
 // ProductFilter bundles the optional filter dimensions shared by every
 // product-listing and facet-count query in this package. Zero value means
 // "no filter" on that dimension — same convention as the existing

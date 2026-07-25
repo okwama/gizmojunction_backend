@@ -121,6 +121,10 @@ func (h *Handlers) GetCategoryProducts(ctx context.Context, input *CategoryProdu
 		if err := g.Wait(); err != nil {
 			return nil, huma.Error500InternalServerError("failed to load products", err)
 		}
+		if products == nil {
+			products = []ProductSummary{}
+		}
+		facets.Normalize()
 		return &struct{ Body CategoryProductsResponse }{Body: CategoryProductsResponse{
 			Products: products, Facets: facets, Total: total, Page: input.Page, PageSize: input.PageSize,
 		}}, nil
@@ -159,6 +163,10 @@ func (h *Handlers) GetCategoryProducts(ctx context.Context, input *CategoryProdu
 	if err := g.Wait(); err != nil {
 		return nil, huma.Error500InternalServerError("failed to load products", err)
 	}
+	if products == nil {
+		products = []ProductSummary{}
+	}
+	facets.Normalize()
 
 	catCopy := cat
 	return &struct{ Body CategoryProductsResponse }{Body: CategoryProductsResponse{

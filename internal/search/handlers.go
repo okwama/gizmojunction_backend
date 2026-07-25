@@ -151,6 +151,16 @@ func (h *handlers) Search(ctx context.Context, input *SearchInput) (*struct{ Bod
 	if err := g.Wait(); err != nil {
 		return nil, huma.Error500InternalServerError("search failed", err)
 	}
+	if products == nil {
+		products = []catalog.ProductSummary{}
+	}
+	// A nil Go slice encodes as JSON null, not [] — the frontend iterates
+	// these facet fields directly with no null-guard, so this must run
+	// before every response (see catalog.Facets.Normalize's doc comment;
+	// the exact bug this prevents shipped once already).
+	if facets != nil {
+		facets.Normalize()
+	}
 
 	return &struct{ Body SearchResponse }{Body: SearchResponse{
 		Products: products, Facets: facets, Total: total, Page: input.Page, Limit: input.Limit,
