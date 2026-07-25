@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -213,8 +214,19 @@ func main() {
 func corsMiddleware(allowedOrigins string, next http.Handler) http.Handler {
 	allowed := make(map[string]bool)
 	for _, origin := range strings.Split(allowedOrigins, ",") {
-		if origin = strings.TrimSpace(origin); origin != "" {
-			allowed[origin] = true
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		allowed[origin] = true
+		// Listing only the apex or only the www variant is an easy config
+		// mistake that silently breaks the other one in production (this
+		// exact gap broke SSR category-nav fetches from both
+		// gizmojunction.com and www.gizmojunction.com because CORS_ORIGIN
+		// only had one of them configured) — auto-allow both from a single
+		// entry so it can't recur.
+		if counterpart, ok := wwwCounterpart(origin); ok {
+			allowed[counterpart] = true
 		}
 	}
 
@@ -232,4 +244,21 @@ func corsMiddleware(allowedOrigins string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// wwwCounterpart returns the other of {apex, www} for an http(s) origin —
+// "https://gizmojunction.com" -> "https://www.gizmojunction.com" and back.
+// ok is false for anything without a real host (e.g. localhost origins,
+// which have no apex/www distinction and don't need one).
+func wwwCounterpart(origin string) (string, bool) {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	if strings.HasPrefix(u.Host, "www.") {
+		u.Host = strings.TrimPrefix(u.Host, "www.")
+	} else {
+		u.Host = "www." + u.Host
+	}
+	return u.Scheme + "://" + u.Host, true
 }
