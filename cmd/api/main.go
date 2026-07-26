@@ -164,16 +164,11 @@ func main() {
 	taxetims.RegisterReceipts(api, receiptDeps, authSvc)
 	taxetims.RegisterQR(mux, receiptDeps)
 
-	pos.Register(api, orders.NewRepo(pool, pool), taxetimsDeps, authSvc)
-
-	// Logged once at startup, not per-request — sandbox vs. production is
-	// silent otherwise (sandbox accepts STK requests and calls back on its
-	// own simulated timer without ever reaching a real phone, which looks
-	// identical to a real failed payment from the checkout page).
-	log.Printf("payments: M-Pesa environment=%s till=%s configured=%v; Resend email configured=%v",
-		cfg.MpesaEnvironment, cfg.MpesaTillNumber, cfg.MpesaConsumerKey != "" && cfg.MpesaPasskey != "", cfg.ResendAPIKey != "")
-
-	payments.Register(api, mux, &payments.Deps{
+	// Built before pos.Register so POS's M-Pesa STK push (in-store sales
+	// paid by prompting the customer's phone) can reuse the exact same
+	// payments.Deps.StkPush call the storefront checkout uses, instead of
+	// duplicating Safaricom API plumbing.
+	paymentsDeps := &payments.Deps{
 		Orders:   pool,
 		River:    riverClient,
 		Taxetims: &taxetimsDeps,
@@ -188,7 +183,18 @@ func main() {
 			BackendPublicURL:    cfg.BackendPublicURL,
 			SiteURL:             cfg.SiteURL,
 		},
-	})
+	}
+
+	pos.Register(api, orders.NewRepo(pool, pool), taxetimsDeps, authSvc, paymentsDeps)
+
+	// Logged once at startup, not per-request — sandbox vs. production is
+	// silent otherwise (sandbox accepts STK requests and calls back on its
+	// own simulated timer without ever reaching a real phone, which looks
+	// identical to a real failed payment from the checkout page).
+	log.Printf("payments: M-Pesa environment=%s till=%s configured=%v; Resend email configured=%v",
+		cfg.MpesaEnvironment, cfg.MpesaTillNumber, cfg.MpesaConsumerKey != "" && cfg.MpesaPasskey != "", cfg.ResendAPIKey != "")
+
+	payments.Register(api, mux, paymentsDeps)
 
 	handler := corsMiddleware(cfg.CORSOrigin, mux)
 
