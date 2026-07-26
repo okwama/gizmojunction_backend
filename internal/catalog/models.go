@@ -88,7 +88,7 @@ func (f *Facets) Normalize() {
 // ProductFilter bundles the optional filter dimensions shared by every
 // product-listing and facet-count query in this package. Zero value means
 // "no filter" on that dimension — same convention as the existing
-// `$1 = '' OR ...` optional-param pattern already used for category/brand
+// `$1 = ” OR ...` optional-param pattern already used for category/brand
 // matching elsewhere in this backend. A struct (rather than more positional
 // args) avoids repeated signature churn as filter dimensions are added.
 //
@@ -98,9 +98,9 @@ func (f *Facets) Normalize() {
 // derivation). Facet queries resolve a product's top-level ancestor via a
 // single COALESCE(parent_id, id), not a recursive CTE.
 type ProductFilter struct {
-	MinPrice  float64  // 0 = no lower bound
-	MaxPrice  float64  // 0 = no upper bound
-	MinRating int      // 0 = none, else 1..4
+	MinPrice  float64 // 0 = no lower bound
+	MaxPrice  float64 // 0 = no upper bound
+	MinRating int     // 0 = none, else 1..4
 	InStock   bool
 	Brands    []string // canonical (post-COALESCE) brand names; nil/empty = no filter
 }
@@ -171,7 +171,11 @@ type AdminProduct struct {
 	StockQty        int32    `db:"stock_quantity" json:"stock_quantity"`
 	ImageURL        *string  `db:"image_url" json:"image_url,omitempty"`
 	TaxClass        *string  `db:"tax_class" json:"tax_class,omitempty"`
-	IsFeatured      bool     `db:"is_featured" json:"is_featured"`
+	// Barcode was never selected here before POS needed it for scan-to-add
+	// lookup (backend/internal/pos) — admin's product list/edit views didn't
+	// need it previously.
+	Barcode    *string `db:"barcode" json:"barcode,omitempty"`
+	IsFeatured bool    `db:"is_featured" json:"is_featured"`
 	// required:false — the admin save form never sends it and UpsertProduct
 	// deliberately ignores it (publish state changes only via bulk-status).
 	IsPublished bool `db:"is_published" json:"is_published" required:"false"`

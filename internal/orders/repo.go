@@ -126,7 +126,7 @@ var ErrUnavailable = errors.New("product unavailable")
 // rate applies. Unknown county falls back to 0 (matching the checkout UI,
 // which shows "Rate unavailable" but still allows the order).
 func (r *Repo) shippingFeeFor(ctx context.Context, deliveryMethod, county string, subtotal float64) (float64, error) {
-	if deliveryMethod == "pickup" || subtotal >= freeDeliveryThreshold || county == "" {
+	if deliveryMethod == "pickup" || deliveryMethod == "in_store" || subtotal >= freeDeliveryThreshold || county == "" {
 		return 0, nil
 	}
 	col := "standard_fee"
@@ -156,7 +156,7 @@ func (r *Repo) CreateOrder(ctx context.Context, customerID *string, o NewOrder) 
 	switch method {
 	case "", "standard":
 		method = "standard"
-	case "express", "pickup":
+	case "express", "pickup", "in_store":
 	default:
 		return "", fmt.Errorf("%w: unknown delivery method %q", ErrUnavailable, o.DeliveryMethod)
 	}
@@ -325,6 +325,25 @@ func (r *Repo) RestoreStock(ctx context.Context, orderID string) error {
 		return fmt.Errorf("stock flag update: %w", err)
 	}
 	return tx.Commit(ctx)
+}
+
+// MarkInStoreSalePaid flips a freshly-created POS order straight to paid —
+// CreateOrder always inserts 'PENDING'/'unpaid' since online payments start
+// pending until a webhook confirms them, but a POS sale is confirmed paid
+// by the cashier in person (cash in hand, or a verified M-Pesa till
+// payment) at the moment of creation. DELIVERED is reused rather than
+// adding a new order_status enum value — the goods leave the shop
+// immediately, so it's the closest accurate existing state.
+//
+// extraMetadata (e.g. `{"mpesa_confirmation_code":"QGH7XXXXX"}`) is merged
+// into the existing payment_metadata jsonb rather than overwriting it; pass
+// "{}" when there's nothing to record.
+func (r *Repo) MarkInStoreSalePaid(ctx context.Context, orderID string, extraMetadata json.RawMessage) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE orders SET payment_status = 'paid', status = 'DELIVERED',
+			payment_metadata = COALESCE(payment_metadata, '{}'::jsonb) || $2::jsonb
+		WHERE id = $1`, orderID, extraMetadata)
+	return err
 }
 
 // --- Reads ---

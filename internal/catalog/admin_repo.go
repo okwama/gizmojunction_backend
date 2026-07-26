@@ -92,7 +92,7 @@ func (r *Repo) DeleteBrand(ctx context.Context, id string) error {
 	return err
 }
 
-const adminProductColumns = `p.id::text, p.name, p.sku, p.brand_id::text, b.name AS brand_name, p.category_id::text, c.name AS category_name, p.price::float8, p.sale_price::float8, p.cost_price::float8, p.old_price::float8, p.description_html, p.stock_quantity, p.image_url, p.tax_class, p.is_featured, p.is_published`
+const adminProductColumns = `p.id::text, p.name, p.sku, p.brand_id::text, b.name AS brand_name, p.category_id::text, c.name AS category_name, p.price::float8, p.sale_price::float8, p.cost_price::float8, p.old_price::float8, p.description_html, p.stock_quantity, p.image_url, p.tax_class, p.barcode, p.is_featured, p.is_published`
 
 const adminProductFrom = `FROM products p LEFT JOIN brands b ON b.id = p.brand_id LEFT JOIN categories c ON c.id = p.category_id`
 
@@ -134,6 +134,18 @@ func (r *Repo) ListProductsAdmin(ctx context.Context, search, categoryID string,
 
 func (r *Repo) ProductByIDAdmin(ctx context.Context, id string) (AdminProduct, error) {
 	rows, err := r.pool.Query(ctx, `SELECT `+adminProductColumns+` `+adminProductFrom+` WHERE p.id = $1`, id)
+	if err != nil {
+		return AdminProduct{}, err
+	}
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[AdminProduct])
+}
+
+// ProductByBarcodeAdmin is an exact-match lookup for POS's barcode-scan
+// add-to-cart flow — a scanner needs a fast single-row hit, not a
+// paginated ILIKE search (ListProductsAdmin's search box does the latter,
+// for name/SKU typing).
+func (r *Repo) ProductByBarcodeAdmin(ctx context.Context, barcode string) (AdminProduct, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+adminProductColumns+` `+adminProductFrom+` WHERE p.barcode = $1`, barcode)
 	if err != nil {
 		return AdminProduct{}, err
 	}

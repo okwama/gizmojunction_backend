@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -94,6 +95,13 @@ func RegisterAdmin(api huma.API, repo *Repo, authSvc *auth.Service) {
 		Path:        "/v1/admin/products/{id}",
 		Summary:     "Delete a product (admin only)",
 	}, h.DeleteProduct)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-get-product-by-barcode",
+		Method:      http.MethodGet,
+		Path:        "/v1/admin/products/barcode/{code}",
+		Summary:     "Exact-match product lookup by barcode, for POS scan-to-add (admin only)",
+	}, h.GetProductByBarcode)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "admin-bulk-update-product-category",
@@ -235,14 +243,22 @@ type DeleteCategoryInput struct {
 	ID            string `path:"id"`
 }
 
-func (h *AdminHandlers) DeleteCategory(ctx context.Context, input *DeleteCategoryInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) DeleteCategory(ctx context.Context, input *DeleteCategoryInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
 	if err := h.repo.DeleteCategory(ctx, input.ID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to delete category", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
@@ -255,7 +271,11 @@ type MergeCategoriesInput struct {
 	}
 }
 
-func (h *AdminHandlers) MergeCategories(ctx context.Context, input *MergeCategoriesInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) MergeCategories(ctx context.Context, input *MergeCategoriesInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
@@ -265,7 +285,11 @@ func (h *AdminHandlers) MergeCategories(ctx context.Context, input *MergeCategor
 	if err := h.repo.MergeCategories(ctx, input.Body.SourceID, input.Body.TargetID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to merge categories", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
@@ -311,14 +335,22 @@ type DeleteBrandInput struct {
 	ID            string `path:"id"`
 }
 
-func (h *AdminHandlers) DeleteBrand(ctx context.Context, input *DeleteBrandInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) DeleteBrand(ctx context.Context, input *DeleteBrandInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
 	if err := h.repo.DeleteBrand(ctx, input.ID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to delete brand", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
@@ -374,16 +406,43 @@ type DeleteProductInput struct {
 	ID            string `path:"id"`
 }
 
-func (h *AdminHandlers) DeleteProduct(ctx context.Context, input *DeleteProductInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) DeleteProduct(ctx context.Context, input *DeleteProductInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
 	if err := h.repo.DeleteProduct(ctx, input.ID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to delete product", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
+}
+
+type GetProductByBarcodeInput struct {
+	Authorization string `header:"Authorization"`
+	Code          string `path:"code"`
+}
+
+func (h *AdminHandlers) GetProductByBarcode(ctx context.Context, input *GetProductByBarcodeInput) (*struct{ Body AdminProduct }, error) {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+		return nil, err
+	}
+	product, err := h.repo.ProductByBarcodeAdmin(ctx, input.Code)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, huma.Error404NotFound("no product with that barcode")
+		}
+		return nil, huma.Error500InternalServerError("failed to look up product", err)
+	}
+	return &struct{ Body AdminProduct }{Body: product}, nil
 }
 
 type BulkUpdateCategoryInput struct {
@@ -394,7 +453,11 @@ type BulkUpdateCategoryInput struct {
 	}
 }
 
-func (h *AdminHandlers) BulkUpdateCategory(ctx context.Context, input *BulkUpdateCategoryInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) BulkUpdateCategory(ctx context.Context, input *BulkUpdateCategoryInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
@@ -404,7 +467,11 @@ func (h *AdminHandlers) BulkUpdateCategory(ctx context.Context, input *BulkUpdat
 	if err := h.repo.BulkUpdateProductCategory(ctx, input.Body.ProductIDs, input.Body.CategoryID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to update products", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
@@ -417,7 +484,11 @@ type BulkUpdateStatusInput struct {
 	}
 }
 
-func (h *AdminHandlers) BulkUpdateStatus(ctx context.Context, input *BulkUpdateStatusInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) BulkUpdateStatus(ctx context.Context, input *BulkUpdateStatusInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
@@ -427,7 +498,11 @@ func (h *AdminHandlers) BulkUpdateStatus(ctx context.Context, input *BulkUpdateS
 	if err := h.repo.BulkUpdateProductStatus(ctx, input.Body.ProductIDs, input.Body.IsPublished); err != nil {
 		return nil, huma.Error500InternalServerError("failed to update products", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
@@ -444,7 +519,11 @@ type BulkAdjustPriceInput struct {
 	}
 }
 
-func (h *AdminHandlers) BulkAdjustPrice(ctx context.Context, input *BulkAdjustPriceInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) BulkAdjustPrice(ctx context.Context, input *BulkAdjustPriceInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
@@ -457,7 +536,11 @@ func (h *AdminHandlers) BulkAdjustPrice(ctx context.Context, input *BulkAdjustPr
 	if err := h.repo.BulkAdjustPrice(ctx, input.Body.ProductIDs, input.Body.Mode, input.Body.Value); err != nil {
 		return nil, huma.Error500InternalServerError("failed to adjust prices", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
@@ -469,7 +552,11 @@ type BulkDeleteProductsInput struct {
 	}
 }
 
-func (h *AdminHandlers) BulkDeleteProducts(ctx context.Context, input *BulkDeleteProductsInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) BulkDeleteProducts(ctx context.Context, input *BulkDeleteProductsInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
@@ -479,19 +566,31 @@ func (h *AdminHandlers) BulkDeleteProducts(ctx context.Context, input *BulkDelet
 	if err := h.repo.BulkDeleteProducts(ctx, input.Body.ProductIDs); err != nil {
 		return nil, huma.Error500InternalServerError("failed to delete products", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
 
-func (h *AdminHandlers) EmptyCatalog(ctx context.Context, input *adminAuthInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) EmptyCatalog(ctx context.Context, input *adminAuthInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
 	if err := h.repo.EmptyProductCatalog(ctx); err != nil {
 		return nil, huma.Error500InternalServerError("failed to empty catalog", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
@@ -536,14 +635,22 @@ type DeletePromotionInput struct {
 	ID            string `path:"id"`
 }
 
-func (h *AdminHandlers) DeletePromotion(ctx context.Context, input *DeletePromotionInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) DeletePromotion(ctx context.Context, input *DeletePromotionInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
 	if err := h.repo.DeletePromotion(ctx, input.ID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to delete promotion", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }
@@ -585,14 +692,22 @@ type DeleteBlogPostInput struct {
 	ID            string `path:"id"`
 }
 
-func (h *AdminHandlers) DeleteBlogPost(ctx context.Context, input *DeleteBlogPostInput) (*struct{ Body struct{ Success bool `json:"success"` } }, error) {
+func (h *AdminHandlers) DeleteBlogPost(ctx context.Context, input *DeleteBlogPostInput) (*struct {
+	Body struct {
+		Success bool `json:"success"`
+	}
+}, error) {
 	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
 		return nil, err
 	}
 	if err := h.repo.DeleteBlogPost(ctx, input.ID); err != nil {
 		return nil, huma.Error500InternalServerError("failed to delete blog post", err)
 	}
-	out := &struct{ Body struct{ Success bool `json:"success"` } }{}
+	out := &struct {
+		Body struct {
+			Success bool `json:"success"`
+		}
+	}{}
 	out.Body.Success = true
 	return out, nil
 }

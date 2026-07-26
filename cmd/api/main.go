@@ -27,6 +27,7 @@ import (
 	"gizmojunction/backend/internal/newsletter"
 	"gizmojunction/backend/internal/orders"
 	"gizmojunction/backend/internal/payments"
+	"gizmojunction/backend/internal/pos"
 	"gizmojunction/backend/internal/search"
 	"gizmojunction/backend/internal/storage"
 	"gizmojunction/backend/internal/store"
@@ -162,6 +163,8 @@ func main() {
 	taxetims.RegisterAdmin(api, taxetimsDeps, authSvc)
 	taxetims.RegisterReceipts(api, receiptDeps, authSvc)
 	taxetims.RegisterQR(mux, receiptDeps)
+
+	pos.Register(api, orders.NewRepo(pool, pool), taxetimsDeps, authSvc)
 
 	// Logged once at startup, not per-request — sandbox vs. production is
 	// silent otherwise (sandbox accepts STK requests and calls back on its
