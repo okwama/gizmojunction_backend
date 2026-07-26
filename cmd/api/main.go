@@ -28,6 +28,7 @@ import (
 	"gizmojunction/backend/internal/orders"
 	"gizmojunction/backend/internal/payments"
 	"gizmojunction/backend/internal/pos"
+	"gizmojunction/backend/internal/returns"
 	"gizmojunction/backend/internal/search"
 	"gizmojunction/backend/internal/storage"
 	"gizmojunction/backend/internal/store"
@@ -186,6 +187,7 @@ func main() {
 	}
 
 	pos.Register(api, orders.NewRepo(pool, pool), taxetimsDeps, authSvc, paymentsDeps)
+	returns.Register(api, returns.NewRepo(pool), authSvc)
 
 	// Logged once at startup, not per-request — sandbox vs. production is
 	// silent otherwise (sandbox accepts STK requests and calls back on its
