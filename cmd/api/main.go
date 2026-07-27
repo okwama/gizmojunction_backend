@@ -17,6 +17,7 @@ import (
 	"gizmojunction/backend/internal/ai"
 	"gizmojunction/backend/internal/audit"
 	"gizmojunction/backend/internal/auth"
+	"gizmojunction/backend/internal/cashups"
 	"gizmojunction/backend/internal/catalog"
 	"gizmojunction/backend/internal/config"
 	"gizmojunction/backend/internal/db"
@@ -192,6 +193,7 @@ func main() {
 	returns.Register(api, returns.NewRepo(pool), authSvc)
 	quotes.Register(api, quotes.NewRepo(pool), authSvc, r2Client, emailSender, cfg.BackendPublicURL)
 	stocktakes.Register(api, stocktakes.NewRepo(pool), authSvc)
+	cashups.Register(api, cashups.NewRepo(pool), authSvc)
 
 	// Logged once at startup, not per-request — sandbox vs. production is
 	// silent otherwise (sandbox accepts STK requests and calls back on its

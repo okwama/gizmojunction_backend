@@ -1,0 +1,3 @@
+-- Postgres cannot drop a value from an enum type. Rolling this back for
+-- real would require recreating public.user_role without 'CASHIER' and
+-- migrating every dependent column — not attempted here.

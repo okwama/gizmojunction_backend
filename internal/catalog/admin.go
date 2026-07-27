@@ -370,8 +370,11 @@ type ListProductsResponse struct {
 	Total    int            `json:"total"`
 }
 
+// ListProducts also allows CASHIER — POS's product search/add-to-cart
+// reuses this same read-only endpoint, unlike SaveProduct/DeleteProduct
+// (pricing/catalog mutation), which stay ADMIN-only.
 func (h *AdminHandlers) ListProducts(ctx context.Context, input *ListProductsInput) (*struct{ Body ListProductsResponse }, error) {
-	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN", "CASHIER"); err != nil {
 		return nil, err
 	}
 	offset := (input.Page - 1) * input.PageSize
@@ -431,8 +434,10 @@ type GetProductByBarcodeInput struct {
 	Code          string `path:"code"`
 }
 
+// Also allows CASHIER — this is POS's scan-to-add lookup, same reasoning
+// as ListProducts above.
 func (h *AdminHandlers) GetProductByBarcode(ctx context.Context, input *GetProductByBarcodeInput) (*struct{ Body AdminProduct }, error) {
-	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN", "CASHIER"); err != nil {
 		return nil, err
 	}
 	product, err := h.repo.ProductByBarcodeAdmin(ctx, input.Code)

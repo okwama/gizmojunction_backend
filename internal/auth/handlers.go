@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -316,13 +317,16 @@ func (s *Service) Authenticate(authHeader string) (*Claims, error) {
 }
 
 // RequireRole is called by handlers in other packages that need to gate an
-// endpoint to a specific role (e.g. the AI admin endpoints).
-func (s *Service) RequireRole(authHeader, role string) (*Claims, error) {
+// endpoint to a specific role (e.g. the AI admin endpoints). extraRoles is
+// variadic so every existing single-role call site keeps compiling
+// unchanged — only endpoints that need to allow more than one role (e.g.
+// POS, shared between ADMIN and CASHIER) pass a second argument.
+func (s *Service) RequireRole(authHeader, role string, extraRoles ...string) (*Claims, error) {
 	claims, err := s.requireBearer(authHeader)
 	if err != nil {
 		return nil, err
 	}
-	if claims.Role != role {
+	if claims.Role != role && !slices.Contains(extraRoles, claims.Role) {
 		return nil, huma.Error403Forbidden("insufficient permissions")
 	}
 	return claims, nil

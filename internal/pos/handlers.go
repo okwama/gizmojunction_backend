@@ -88,7 +88,8 @@ type CreateSaleOutput struct {
 }
 
 func (h *Handlers) CreateSale(ctx context.Context, input *CreateSaleInput) (*CreateSaleOutput, error) {
-	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+	claims, err := h.authSvc.RequireRole(input.Authorization, "ADMIN", "CASHIER")
+	if err != nil {
 		return nil, err
 	}
 	if len(input.Body.Items) == 0 {
@@ -124,6 +125,12 @@ func (h *Handlers) CreateSale(ctx context.Context, input *CreateSaleInput) (*Cre
 			return nil, huma.Error400BadRequest(err.Error())
 		}
 		return nil, huma.Error500InternalServerError("failed to create sale", err)
+	}
+
+	// Non-fatal: attributing the sale to the cashier only matters for
+	// cash-up/Z-report totals, not for the sale itself succeeding.
+	if err := h.orders.SetServedBy(ctx, orderID, claims.ProfileID); err != nil {
+		log.Printf("pos: failed to record served_by for order %s: %v", orderID, err)
 	}
 
 	// mpesa_stk stays PENDING/unpaid here — the customer hasn't confirmed
@@ -185,7 +192,7 @@ type MpesaPromptOutput struct {
 // eTIMS enqueue) are one code path, not two. Composition over duplication,
 // same as this package already does with orders.Repo.
 func (h *Handlers) MpesaPrompt(ctx context.Context, input *MpesaPromptInput) (*MpesaPromptOutput, error) {
-	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN", "CASHIER"); err != nil {
 		return nil, err
 	}
 	if input.Body.Phone == "" {

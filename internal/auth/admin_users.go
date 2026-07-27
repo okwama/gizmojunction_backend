@@ -20,7 +20,7 @@ type CreateUserInput struct {
 		Password string `json:"password" minLength:"8"`
 		FullName string `json:"full_name"`
 		Phone    string `json:"phone,omitempty"`
-		Role     string `json:"role,omitempty" enum:"ADMIN,CUSTOMER"`
+		Role     string `json:"role,omitempty" enum:"ADMIN,CASHIER,CUSTOMER"`
 	}
 }
 
@@ -67,7 +67,7 @@ type UpdateRoleInput struct {
 	Authorization string `header:"Authorization"`
 	ID            string `path:"id"`
 	Body          struct {
-		Role string `json:"role" enum:"ADMIN,CUSTOMER"`
+		Role string `json:"role" enum:"ADMIN,CASHIER,CUSTOMER"`
 	}
 }
 

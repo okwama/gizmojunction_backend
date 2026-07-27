@@ -346,6 +346,15 @@ func (r *Repo) MarkInStoreSalePaid(ctx context.Context, orderID string, extraMet
 	return err
 }
 
+// SetServedBy attributes a POS sale to the cashier who rang it up — used
+// for cash-up/Z-report shift totals. A standalone method rather than a
+// NewOrder field so CreateOrder (shared with online checkout) doesn't need
+// touching for a POS-only concern.
+func (r *Repo) SetServedBy(ctx context.Context, orderID, profileID string) error {
+	_, err := r.db.Exec(ctx, `UPDATE orders SET served_by = $1 WHERE id = $2`, profileID, orderID)
+	return err
+}
+
 // --- Reads ---
 
 func (r *Repo) itemsFor(ctx context.Context, orderIDs []string) (map[string][]OrderItem, error) {

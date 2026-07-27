@@ -323,8 +323,13 @@ type AdminGetInput struct {
 	ID            string `path:"id"`
 }
 
+// AdminGet also allows CASHIER — POS polls this endpoint while waiting on
+// an mpesa_stk sale to confirm. A cashier token can technically look up any
+// order by id this way, not just their own POS sales; accepted as a
+// deliberate tradeoff for a small, single-location shop rather than
+// building per-order ownership scoping for this one internal flow.
 func (h *Handlers) AdminGet(ctx context.Context, input *AdminGetInput) (*OrderOutput, error) {
-	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN", "CASHIER"); err != nil {
 		return nil, err
 	}
 	order, err := h.repo.OrderByID(ctx, input.ID)
@@ -353,8 +358,11 @@ type successOutput struct {
 	}
 }
 
+// AdminUpdate also allows CASHIER — POS uses this to mark an mpesa_stk sale
+// DELIVERED once paid, or CANCELLED if the customer backs out. Same
+// accepted tradeoff as AdminGet above.
 func (h *Handlers) AdminUpdate(ctx context.Context, input *AdminUpdateInput) (*successOutput, error) {
-	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN"); err != nil {
+	if _, err := h.authSvc.RequireRole(input.Authorization, "ADMIN", "CASHIER"); err != nil {
 		return nil, err
 	}
 	if input.Body.Status == nil && input.Body.KraPin == nil && input.Body.PaymentTerms == nil {
