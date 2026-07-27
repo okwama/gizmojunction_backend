@@ -31,6 +31,7 @@ import (
 	"gizmojunction/backend/internal/quotes"
 	"gizmojunction/backend/internal/returns"
 	"gizmojunction/backend/internal/search"
+	"gizmojunction/backend/internal/stocktakes"
 	"gizmojunction/backend/internal/storage"
 	"gizmojunction/backend/internal/store"
 	"gizmojunction/backend/internal/suppliersync"
@@ -190,6 +191,7 @@ func main() {
 	pos.Register(api, orders.NewRepo(pool, pool), taxetimsDeps, authSvc, paymentsDeps)
 	returns.Register(api, returns.NewRepo(pool), authSvc)
 	quotes.Register(api, quotes.NewRepo(pool), authSvc, r2Client, emailSender, cfg.BackendPublicURL)
+	stocktakes.Register(api, stocktakes.NewRepo(pool), authSvc)
 
 	// Logged once at startup, not per-request — sandbox vs. production is
 	// silent otherwise (sandbox accepts STK requests and calls back on its
