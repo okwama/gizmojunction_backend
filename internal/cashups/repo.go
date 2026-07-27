@@ -14,14 +14,17 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gizmojunction/backend/internal/shifts"
 )
 
 type Repo struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	shifts *shifts.Repo
 }
 
-func NewRepo(pool *pgxpool.Pool) *Repo {
-	return &Repo{pool: pool}
+func NewRepo(pool *pgxpool.Pool, shiftsRepo *shifts.Repo) *Repo {
+	return &Repo{pool: pool, shifts: shiftsRepo}
 }
 
 type MethodTotal struct {
@@ -51,7 +54,20 @@ type CashUp struct {
 	CashierName  *string         `db:"cashier_name" json:"cashier_name,omitempty"`
 }
 
+// periodStart prefers a real, logged-in shift's started_at — a true bound,
+// not a guess. Falls back to the old derived-window logic (since the last
+// cash-up, floored to today) only when no open shift exists: an ADMIN
+// account (which never gets shifts, see internal/auth's Login hook), or a
+// CASHIER account that predates this feature.
 func (r *Repo) periodStart(ctx context.Context, cashierID string) (time.Time, error) {
+	if r.shifts != nil {
+		if start, err := r.shifts.CurrentShiftStart(ctx, cashierID); err != nil {
+			return time.Time{}, err
+		} else if start != nil {
+			return *start, nil
+		}
+	}
+
 	var periodStart time.Time
 	err := r.pool.QueryRow(ctx, `
 		SELECT GREATEST(
@@ -142,6 +158,14 @@ func (r *Repo) SubmitCashUp(ctx context.Context, cashierID string, countedCash f
 	if err != nil {
 		return CashUp{}, err
 	}
+
+	// Submitting a cash-up is one of the two ways a shift ends (the other
+	// being an explicit logout, handled in internal/auth) — a no-op if this
+	// cashier has no open shift (e.g. an ADMIN using cash-up).
+	if r.shifts != nil {
+		_ = r.shifts.CloseOpenForCashier(ctx, cashierID, "cash_up")
+	}
+
 	return c, nil
 }
 

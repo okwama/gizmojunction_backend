@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 	"time"
@@ -19,13 +20,30 @@ const RefreshTokenTTL = 30 * 24 * time.Hour
 // stolen token to matter.
 const refreshRotationGrace = 60 * time.Second
 
+// shiftsRepo is the subset of shifts.Repo that auth needs — declared here
+// rather than importing internal/shifts directly, so auth (a foundational
+// package many others depend on) doesn't gain a dependency on a POS/retail
+// concern. main.go wires the real *shifts.Repo in via SetShifts.
+type shiftsRepo interface {
+	OpenIfNoneOpen(ctx context.Context, cashierID string) error
+	CloseOpenForCashier(ctx context.Context, cashierID, reason string) error
+}
+
 type Service struct {
 	repo      *Repo
 	jwtSecret []byte
+	shifts    shiftsRepo // nil until SetShifts is called; nil-safe throughout
 }
 
 func NewService(repo *Repo, jwtSecret string) *Service {
 	return &Service{repo: repo, jwtSecret: []byte(jwtSecret)}
+}
+
+// SetShifts wires in shift-session tracking after construction — Service
+// is built very early in main.go, before internal/shifts's pool-backed
+// repo exists, so this is a setter rather than a NewService parameter.
+func (s *Service) SetShifts(repo shiftsRepo) {
+	s.shifts = repo
 }
 
 type UserOut struct {
@@ -188,6 +206,15 @@ func (s *Service) Login(ctx context.Context, input *LoginInput) (*AuthResponse, 
 		return nil, huma.Error500InternalServerError("issue tokens failed", err)
 	}
 
+	// Shift tracking is best-effort: a hiccup here must never block a real
+	// login. Only CASHIER accounts get shifts — an ADMIN logging in is just
+	// using the dashboard, not starting a till session.
+	if s.shifts != nil && profile.Role == "CASHIER" {
+		if err := s.shifts.OpenIfNoneOpen(ctx, profile.ID); err != nil {
+			log.Printf("auth: failed to open shift for cashier %s: %v", profile.ID, err)
+		}
+	}
+
 	resp := &AuthResponse{}
 	resp.Body.TokenPair = tokens
 	resp.Body.User = toUserOut(profile)
@@ -264,7 +291,21 @@ type LogoutOutput struct {
 
 func (s *Service) Logout(ctx context.Context, input *LogoutInput) (*LogoutOutput, error) {
 	if input.Body.RefreshToken != "" {
-		_ = s.repo.RevokeRefreshToken(ctx, HashRefreshToken(input.Body.RefreshToken))
+		hash := HashRefreshToken(input.Body.RefreshToken)
+
+		// Look up the owning profile before revoking so a still-open shift
+		// can be closed — best-effort, same as the Login-side open: a
+		// lookup failure (already-revoked/expired token, etc.) must not
+		// stop the logout itself from succeeding.
+		if s.shifts != nil {
+			if rt, err := s.repo.GetRefreshToken(ctx, hash); err == nil {
+				if err := s.shifts.CloseOpenForCashier(ctx, rt.ProfileID, "logout"); err != nil {
+					log.Printf("auth: failed to close shift for profile %s: %v", rt.ProfileID, err)
+				}
+			}
+		}
+
+		_ = s.repo.RevokeRefreshToken(ctx, hash)
 	}
 	out := &LogoutOutput{}
 	out.Body.Success = true

@@ -33,6 +33,7 @@ import (
 	"gizmojunction/backend/internal/quotes"
 	"gizmojunction/backend/internal/returns"
 	"gizmojunction/backend/internal/search"
+	"gizmojunction/backend/internal/shifts"
 	"gizmojunction/backend/internal/stocktakes"
 	"gizmojunction/backend/internal/storage"
 	"gizmojunction/backend/internal/store"
@@ -128,6 +129,11 @@ func main() {
 	auth.Register(api, authSvc)
 	auth.RegisterAdminUsers(api, authSvc)
 
+	// Real shift sessions: opened at login, closed at logout or cash-up
+	// submission (see internal/shifts and internal/auth's Login/Logout).
+	shiftsRepo := shifts.NewRepo(pool)
+	authSvc.SetShifts(shiftsRepo)
+
 	// Product search runs directly against Postgres (full-text + pg_trgm),
 	// so it's always available — no external service to configure.
 	search.Register(api, pool)
@@ -194,7 +200,8 @@ func main() {
 	returns.Register(api, returns.NewRepo(pool), authSvc)
 	quotes.Register(api, quotes.NewRepo(pool), authSvc, r2Client, emailSender, cfg.BackendPublicURL)
 	stocktakes.Register(api, stocktakes.NewRepo(pool), authSvc)
-	cashups.Register(api, cashups.NewRepo(pool), authSvc)
+	cashups.Register(api, cashups.NewRepo(pool, shiftsRepo), authSvc)
+	shifts.Register(api, shiftsRepo, authSvc)
 	labels.Register(api, labels.NewRepo(pool), authSvc, r2Client)
 
 	// Logged once at startup, not per-request — sandbox vs. production is
