@@ -63,3 +63,39 @@ type lpoData struct {
 	SupplierPhone string
 	Items         []lpoItem
 }
+
+// POItemInput is a line item supplied when creating a purchase order.
+type POItemInput struct {
+	ProductID string
+	Quantity  int32
+	UnitCost  float64
+}
+
+// ReceivedItemInput is one line of a goods-received submission.
+type ReceivedItemInput struct {
+	PurchaseOrderItemID string
+	QuantityReceived    int32
+}
+
+// PurchaseOrderItemDetail is one line item on the receive page: what was
+// ordered, what's already been received, and what's left.
+type PurchaseOrderItemDetail struct {
+	ID               string  `db:"id" json:"id"`
+	ProductID        *string `db:"product_id" json:"product_id,omitempty"`
+	Name             string  `db:"name" json:"name"`
+	SKU              string  `db:"sku" json:"sku"`
+	Quantity         int32   `db:"quantity" json:"quantity"`
+	UnitCost         float64 `db:"unit_cost" json:"unit_cost"`
+	ReceivedQuantity int32   `db:"received_quantity" json:"received_quantity"`
+}
+
+type PurchaseOrderDetail struct {
+	ID           string                    `json:"id"`
+	SupplierID   *string                   `json:"supplier_id,omitempty"`
+	SupplierName *string                   `json:"supplier_name,omitempty"`
+	Status       string                    `json:"status"`
+	TotalAmount  float64                   `json:"total_amount"`
+	Notes        *string                   `json:"notes,omitempty"`
+	CreatedAt    time.Time                 `json:"created_at"`
+	Items        []PurchaseOrderItemDetail `json:"items"`
+}
